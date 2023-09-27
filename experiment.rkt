@@ -213,6 +213,11 @@
 ;; The `with-top` makes sure that "unbound identifier" errors
 ;; report the correct error location.
 
+(define (make-vector-variable v)
+  (unless (vector? v)
+    (error 'make-vector-variable "expected a vector, got: ~a" v))
+  (variable (serial) v (undefined-state)))
+
 (define-syntax (numeric stx)
   (syntax-parse stx
     [(_numeric n:numeric)
@@ -222,6 +227,8 @@
        [e:expr
         (syntax/loc #'e
           (with-top (let ([v e])
+                      (when (vector? v)
+                        (set! v (make-vector-variable v)))
                       (unless (or (number? v) (variable? v))
                         (raise-syntax-error 'numeric
                                             "expected a number or a variable"
@@ -361,7 +368,36 @@
                                                        (== s2 ss ...))
                                                  (list #'_==))]))
 
+(define (generate-ith-equations cvs i)
+  ; TODO: ...
+  cvs)
+
+(define (rewrite-vector-variables cvs stxloc)
+  (define (vector-variable? v) (and (variable? v) (vector? (name v))))
+  (define  vars (cvs-variables cvs))
+  (define vvars (filter vector-variable? vars))
+  (define vecs  (map name vvars))
+  (cond
+    ; If there are no vector variables, we simply return our equation.
+    [(null? vvars) (list (list cvs stxloc))]
+    ; Otherwise, we must make an equation from each vector index.
+    [else          (define dims (map vector-length vecs))
+                   (unless (apply = dims)
+                     (raise-syntax-error
+                      '== "all vectors must have the same length" stxloc))
+                   (for/list ([i dims])
+                     (list (generate-ith-equations cvs i)
+                           stxloc))]))
+
 (define (resolve cvss stxlocs)
+  ;; 0. Rewrite equations with "vector variables" into multiple equations.
+  (define rewritten
+    (append*
+     (for/list ([cvs (in-list cvss)] [stxloc (stx->list stxlocs)])
+       (rewrite-vector-variables cvs stxloc))))
+  (set! cvss    (map first  rewritten))
+  (set! stxlocs (map second rewritten))
+
   ;; 1. Make undefined variables in the equation independent.
   (for ([cvs (in-list cvss)])
     (for ([u (cvs-undefined-variables cvs)])
