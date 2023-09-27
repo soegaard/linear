@@ -199,6 +199,9 @@
            e))]))
 
 
+;; The following three macros will wrap user provided expressions.
+;; The `with-top` makes sure that "unbound identifier" errors
+;; report the correct error location.
 
 (define-syntax (numeric stx)
   (syntax-parse stx
@@ -206,21 +209,14 @@
      (syntax-parse #'n
        [x:number         #'x]
        [v:variable       #''v]
-       [e:expr           #'(with-top
-                               (let ([v e])
-                                 v))])]))
-
-(define-syntax (numeric-expression stx)
-  (syntax-parse stx
-    [(_ e:expr)
-     (syntax/loc #'e
-       (with-top
-           (let ([v e])
-             (unless (or (number? v) (variable? v))
-               (raise-syntax-error 'numeric-expression
-                                   "expected a number or a variable"
-                                   #'e))
-             v)))]))
+       [e:expr
+        (syntax/loc #'e
+          (with-top (let ([v e])
+                      (unless (or (number? v) (variable? v))
+                        (raise-syntax-error 'numeric
+                                            "expected a number or a variable"
+                                            #'e))
+                      v)))])]))
 
 (define-syntax (number-expression stx)
   (syntax-parse stx
@@ -252,7 +248,6 @@
      (define ps (filter product?      fs))
      (define es (filter other?        fs))
        
-     (displayln (list 'product: ns vs ps es))
      (when (> (length vs) 1)
        (raise-syntax-error 'product
                            "at most one variable allowed in a product"
@@ -282,7 +277,7 @@
        [(= (length vs) 0)
         (with-syntax ([n ns-prod] [(e ...) es])
           (syntax/loc stx
-            (let ([xs (list (numeric-expression e) ...)])
+            (let ([xs (list (numeric e) ...)])
               (define ns (filter number?   xs))
               (define vs (filter variable? xs))
               (define m (apply * ns))
@@ -293,20 +288,6 @@
               (if (null? vs)
                   (cons (* n m) 1)
                   (cons (* n m) (car vs))))))])]
-       
-     
-     #;(if (attribute p)
-         #'(let ()
-             (define cv (product p))
-             (cons (* n ... (car cv)) (cdr cv)))
-         #'(cons (* n ...) 1))
-    
-    [(_product (* (~alt n:number (~optional p:product) ) ...))
-     (if (attribute p)
-         #'(let ()
-             (define cv (product p))
-             (cons (* n ... (car cv)) (cdr cv)))
-         #'(cons (* n ...) 1))]
     
     [(_product (- p:product))                 #'(let ()
                                                   (define cv (product p))
@@ -314,7 +295,6 @@
     [(_product (+ p:product))                 #'(product p)]
     ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
     [(_product n:numeric)
-     (displayln (list 'product 'numeric (syntax->datum #'n)))
      (syntax-parse #'n
        [n:number   #'(cons n 1)]
        [v:variable #'(cons 1 'v)]
