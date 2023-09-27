@@ -1,23 +1,8 @@
 #lang racket
-;; WORK IN PROGRESS
-;;  [ ] introducing general arithmetic on expressions that might contain variables
-;;      [ ]  add*  (soon to be `add`) needs to handle "linear equations" too.
-;;  [ ] introduce "combination" for a linear combination.
-;;  [ ] Question: Make the constant field a term with a "one variable" ?
+;;; TODO:
+;;    Known and unknown for tuple variables?
 
-;; BIGGER PICTURE
-;;   - allow pairs (or vectors) in equations.
-;;
-;;  [ ] Current experiment: Use plus and minus instead of + and -
-;;      to define the binary operations. Also allow vectors as linear terms.
-;;      If all terms are vectors, this works as expected.
-
-;;  [ ] But ... how to implement `xpart` ?
-;;      Maybe let xpart = #(x whatever) ,
-;;      where whatever is some anonymous variable.
-
-;; TODO: Allow linear-term to return a list of cvs.
-;;       This allows (vector x y) to be rewritten as (+ (* x one-zero) (* y zero-one)).
+;;; LINEAR RELATIONS FOR VARIABLES
 
 (require racket/stxparam racket/splicing)
 (require (for-syntax racket/base syntax/parse racket/syntax syntax/stx))
@@ -63,7 +48,7 @@
     [(0 1) (print   output port)]))
 
 (struct variable                    (serial name state)     #:transparent #:mutable
-  ;#:methods gen:custom-write [(define write-proc custom-write-variable)]
+  #:methods gen:custom-write [(define write-proc custom-write-variable)]
   )
 (struct state                       ()                      #:transparent #:mutable)
 (struct undefined-variable   state  ()                      #:transparent #:mutable) ; 1. Variables start here, when declared.
@@ -82,7 +67,7 @@
 ;              - dependencies is a list of dependency, in which the independent variable is part of
 ; Undefined:   Haven't appeared before.
 
-; A depedent variable can turn back into an indenpedent variable,
+; A depedent variable can turn back into an indepedent variable,
 ; if one of the variables it depends on turn into an undefined.
 
 (define (serial [x #f])  (if (variable? x) (variable-serial x) (next-serial!)))
@@ -92,6 +77,9 @@
 (define (known? v)         (known-variable?       (variable-state v)))
 (define (dependent? v)     (dependent-variable?   (variable-state v)))
 (define (independent? v)   (independent-variable? (variable-state v)))
+(define (tuple-var? v)     (and (variable? v) (tuple-variable? (variable-state v))))
+
+(define (numeric? x)       (or (number? x) (and (variable? x) (not (tuple-var? x)))))
 
 (define (value v)          (known-variable-value              (variable-state v)))
 (define (equation v)
@@ -183,38 +171,79 @@
 (define (length= x y) (= (general-length x) (general-length y)))
 
 
-(define add*
+(define plus
   (case-lambda
     [(x y) (cond
-             [(and (number? x) (number? y))               (+ x y)]
-             [(and (vector? x) (vector? y) (length= x y)) (vector-map  add x y)]
-             [(and (number? x) (vector? y))               (vector-map  add (λ (yi) (+ x  yi)) y)]
-             [(and (vector? x) (number? y))               (vector-map  add (λ (xi) (+ xi y))  x)]
-             [(and (tuple?  x) (tuple?  y) (length= x y)) (tuple-map   add x y)]
-             [(and (vector? x) (tuple?  y) (length= x y)) (general-map add x y)])]
+             [(and (number?      x) (number?      y))               (+ x y)]
+             [(and (vector?      x) (vector?      y) (length= x y)) (vector-map  plus x y)]
+             [(and (number?      x) (vector?      y))               (vector-map  plus (λ (yi) (+ x  yi)) y)]
+             [(and (vector?      x) (number?      y))               (vector-map  plus (λ (xi) (+ xi y))  x)]
+             [(and (tuple?       x) (tuple?       y) (length= x y)) (tuple-map   plus x y)]
+             [(and (vector?      x) (tuple?       y) (length= x y)) (general-map plus x y)]
+             [(and (tuple?       x) (vector?      y) (length= x y)) (general-map plus x y)]
+             [(and (combination? x) (combination? y))               (proj1 (add-combination x y))]
+             [(and (number?      x) (combination? y))               (add-constant y x)]
+             [(and (combination? x) (number?      y))               (add-constant x y)]
+             [(and (numeric?     x) (combination? y))               (add-numeric y x)]
+             [(and (combination? x) (numeric?     y))               (add-numeric x y)]
+             [(and (number?      x) (numeric?     y))               (combination '(1) (list y) x)]
+             [(and (numeric?     x) (number?      y))               (combination '(1) (list x) y)]
+             [(and (numeric?     x) (numeric?     y))               (if (= (serial x) (serial y))
+                                                                        (combination '(2)   (list x)   0)
+                                                                        (combination '(1 1) (list x y) 0))]
+             [else (raise-arguments-error 'plus "expected ..." "x" x "y" y)])]             
     [(x)   x]))
-    
+
+(define minus
+  (case-lambda
+    [(x y) (cond
+             [(and (number?      x) (number?      y))               (- x y)]
+             [(and (vector?      x) (vector?      y) (length= x y)) (vector-map  - x y)]
+             [(and (number?      x) (vector?      y))               (vector-map  - (λ (yi) (+ x  yi)) y)]
+             [(and (vector?      x) (number?      y))               (vector-map  - (λ (xi) (+ xi y))  x)]
+             [(and (tuple?       x) (tuple?       y) (length= x y)) (tuple-map   minus x y)]
+             [(and (vector?      x) (tuple?       y) (length= x y)) (general-map minus x y)]
+             [(and (tuple?       x) (vector?      y) (length= x y)) (general-map minus x y)] 
+             [(and (combination? x) (combination? y))               (proj1 (subtract-combination x y))]
+             [(and (number?      x) (combination? y))               (minus (linear-sum x) y)]
+             [(and (combination? x) (number?      y))               (subtract-constant x y)]
+             [(and (numeric?     x) (combination? y))               (minus (linear-sum x) y)]
+             [(and (combination? x) (numeric?     y))               (subtract-numeric x y)]
+             [(and (number?      x) (numeric?     y))               (combination '(-1) (list y)    x)]
+             [(and (numeric?     x) (number?      y))               (combination '( 1) (list x) (- y))]
+             [(and (numeric?     x) (numeric?     y))               (if (= (serial x) (serial y))
+                                                                        (combination '() '() 0)
+                                                                        (combination '(1 -1) (list x y) 0))]
+             [else (raise-arguments-error 'plus "expected ..." "x" x "y" y)])]             
+    [(x)   (cond
+             [(number?      x) (- x)]
+             [(vector?      x) (vector-map - x)]
+             [(tuple?       x) (tuple-map minus x)]
+             [(combination? x) (scale-combination -1 x)]
+             [(numeric?     x) (combination '(-1) (list x) 0)])]))
+             
+
+#;(define minus
+  (case-lambda
+    [(x y) (displayln (list 'minus x y))
+           (cond
+             [(and (number?      x) (number?      y))               (- x y)]
+             [(and (vector?      x) (vector?      y) (length= x y)) (vector-map  minus x y)]
+             [(and (number?      x) (vector?      y))               (vector-map  minus (λ (yi) (+ x  yi)) y)]
+             [(and (vector?      x) (number?      y))               (vector-map  minus (λ (xi) (+ xi y))  x)]
+             [(and (tuple?       x) (tuple?       y) (length= x y)) (tuple-map   minus x y)]
+             [(and (vector?      x) (tuple?       y) (length= x y)) (general-map minus x y)]
+             [(and (tuple?       x) (vector?      y) (length= x y)) (general-map minus x y)]
+             [(and (combination? x) (combination? y))               (proj1 (subtract-combination x y))]
+             [(and (number?      x) (combination? y))               (minus (linear-sum x) y)]
+             [(and (combination? x) (number?      y))               (subtract-constant x y)]
+             [(and (numeric?     x) (combination? y))               (minus (linear-sum x) y)]
+             [(and (combination? x) (numeric?     y))               (subtract-numeric x y)]
+             [else (raise-arguments-error 'minus "expected ..." "x" x "y" y)])]             
+    [(x)   x]))
 
 
-
-;;; EQUATIONS
-
-(struct linear-equation (coefs vars constant) #:transparent #:mutable)
-; represents the equation:
-;   c_0 v_0 + ... + c_n v_n + constant = 0 
-
-  
-(define (constant-equation? eq)
-  (match-define (linear-equation cs vs k) eq)
-  (and (empty? cs) (empty? vs)))
-
-
-(define (format-dependency d)
-  (match-define (dependency v eq) d)
-  (~a (name v) " = " (format-eq-as-expression eq)))
-  
-(define (format-dependencies ds)
-  (string-append* (add-between (map format-dependency ds) "\n  ")))
+;;; FORMATTING
 
 (define (format-variable v)
   (cond
@@ -223,6 +252,13 @@
     [(known?       v) (~a (name v) " = " (value v))]
     [(independent? v) (format-dependencies (dependencies v))]
     [else (error)]))
+
+(define (format-dependency d)
+  (match-define (dependency v eq) d)
+  (~a (name v) " = " (format-eq-as-expression eq)))
+  
+(define (format-dependencies ds)
+  (string-append* (add-between (map format-dependency ds) "\n  ")))
 
 (define (format-eq eq)
   (~a (format-eq-as-expression eq) " = 0"))
@@ -236,9 +272,10 @@
       [else          (~a "+" c (name v))]))
   (define (format-constant k)
     (cond
+      [(zero? k)     ""]
       [(negative? k) (~a     k)]
       [else          (~a "+" k)]))
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (string-trim (string-append (string-append* (map format-term cs vs))
                               (format-constant k))
                "+"))
@@ -246,9 +283,105 @@
 (define (~ x)
   (cond
     [(variable? x)        (format-variable x)]
-    [(linear-equation? x) (format-eq x)]
+    [(combination? x)     (format-eq-as-expression x)]
     [(dependency? x)      (format-dependency x)]
     [else                 (~a x)]))
+
+
+;;; LINEAR COMBINATIONS (EQUATIONS)
+
+(struct combination (coefs vars constant) #:transparent #:mutable)
+; represents either the equation:
+;   c_0 v_0 + ... + c_n v_n + constant = 0
+; or the linear combination
+;   c_0 v_0 + ... + c_n v_n + constant 
+; depending on context.
+
+(define (coefficents c) (combination-coefs     c))
+(define (variables   c) (combination-vars      c))
+(define (constant    c) (combination-constant  c))
+
+(define (constant-combination? eq)
+  (match-define (combination cs vs k) eq)
+  (and (empty? cs) (empty? vs)))
+
+(define (copy-combination c)
+  (match-define (combination cs vs k) c)
+  (combination cs vs k))
+
+(define (add-constant! c k0)
+  (match-define (combination cs vs k) c)
+  (set-combination-constant! c (+ k k0)))
+
+(define (subtract-constant! c k0)
+  (match-define (combination cs vs k) c)
+  (set-combination-constant! c (- k k0)))
+
+(define (add-constant c k0)
+  (match-define (combination cs vs k) c)
+  (combination cs vs (+ k k0)))
+
+(define (subtract-constant c k0)
+  (match-define (combination cs vs k) c)
+  (combination cs vs (- k k0)))
+
+(define (add-numeric c n)
+  (define (report-error)
+    (raise-arguments-error 'add-numeric "expected a number or a numeric variable" "n" n))
+  (cond
+    [(number? n)    (add-constant c n)]
+    [(tuple-var? n) (report-error)]
+    ; TODO: Specializing this addition will improve speed.
+    [(variable? n)  (proj1 (add-combination c (combination '(1) (list n) 0)))] 
+    [else           (report-error)]))
+
+(define (subtract-numeric c n)
+  (define (report-error)
+    (raise-arguments-error 'subtract-numeric "expected a number or a numeric variable" "n" n))
+  (cond
+    [(number? n)    (subtract-constant c n)]
+    [(tuple-var? n) (report-error)]
+    ; TODO: Specializing this addition will improve speed.
+    [(variable? n)  (proj1 (add-combination c (combination '(-1) (list n) 0)))]
+    [else           (report-error)]))
+
+(define (make-termwise-binary-operator binop [unary #f])
+  (define (termwise eq1 eq2)
+    ; A `cv` is a (cons c v), where c is a coefficient (number) and v is a variable
+    (define (vanish? cv)      (zero? (car cv)))
+    (define (compare cv1 cv2) (<= (serial (cdr cv1)) (serial (cdr cv2))))
+    (define (serial= xs ys)   (= (serial (cdr xs)) (serial (cdr ys))))
+    (define (join cv1 cv2)    (cons (binop (car cv1) (car cv2)) (cdr cv1))) ; assumes v1=v2
+    (match-define (combination cs1 vs1 k1) eq1)
+    (match-define (combination cs2 vs2 k2) eq2)
+    (define cs+vs1     (map cons cs1 vs1))
+    (define cs+vs2     (if unary (map cons (map unary cs2) vs2) (map cons cs2 vs2)))
+    (define cs+vs/dups (merge cs+vs1 cs+vs2 compare)) ; merge corresponds to addition
+    (define-values (cs+vs vanished)
+      (uniqify-sorted cs+vs/dups serial= join vanish?))
+    (define cs         (map car cs+vs))
+    (define vs         (map cdr cs+vs))
+    (values (combination cs vs (binop k1 k2))
+            vanished))
+  termwise)
+
+(define-syntax (proj1 stx)
+  (syntax-parse stx
+    [(_proj1 e:expr) #'(let-values ([(a b) e]) a)]))
+
+(define add-combination
+  (let ()
+    (define termwise-add (make-termwise-binary-operator + +))
+    (λ (eq1 eq2) (termwise-add eq1 eq2))))
+
+(define subtract-combination
+  (let ()
+    (define termwise-subtract (make-termwise-binary-operator - -))
+    (λ (eq1 eq2) (termwise-subtract eq1 eq2))))
+
+(define (scale-combination k eq)
+  (define-values (eq* vanished) (map-coeffs (λ (c) (* k c)) eq))
+  eq*)
 
 
 (define (merge xs ys compare<=)
@@ -285,25 +418,7 @@
   (values (loop xs)
           vanished))
                             
-(define (make-termwise-binary-operator binop [unary #f])
-  (define (termwise eq1 eq2)
-    ; A `cv` is a (cons c v), where c is a coeffecient (number) and v is a variable
-    (define (vanish? cv)      (zero? (car cv)))
-    (define (compare cv1 cv2) (<= (serial (cdr cv1)) (serial (cdr cv2))))
-    (define (serial= xs ys)   (= (serial (cdr xs)) (serial (cdr ys))))
-    (define (join cv1 cv2)    (cons (binop (car cv1) (car cv2)) (cdr cv1))) ; assumes v1=v2
-    (match-define (linear-equation cs1 vs1 k1) eq1)
-    (match-define (linear-equation cs2 vs2 k2) eq2)
-    (define cs+vs1     (map cons cs1 vs1))
-    (define cs+vs2     (if unary (map cons (map unary cs2) vs2) (map cons cs2 vs2)))
-    (define cs+vs/dups (merge cs+vs1 cs+vs2 compare)) ; merge corresponds to addition
-    (define-values (cs+vs vanished)
-      (uniqify-sorted cs+vs/dups serial= join vanish?))
-    (define cs         (map car cs+vs))
-    (define vs         (map cdr cs+vs))
-    (values (linear-equation cs vs (binop k1 k2))
-            vanished))
-  termwise)
+
 
 (define (remove2 remove-pred xs ys)
   (define vanished '())
@@ -340,18 +455,18 @@
   ; Map f over the coefficients and the constant in the equation.
   ; If any coeffecients become zero (vanish) return a list of
   ; vanished variables as the second return value.
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (define (remove? c v) (zero? c))
   (define fcs (map f cs))
   (define-values (cs* vs* vanished) (remove2 remove? fcs vs))
-  (values (linear-equation cs* vs* (f k))
+  (values (combination cs* vs* (f k))
           (map cadr vanished)))
 
 ; find-independent : linear-equation -> (values coef independent-variable)
 ;       or         : linear-equation -> (value #f #f)
 ;   Find the independent variable with the greatest absolute value.
 (define (find-independent eq)
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (define-values (ics ivs) (filter2 (λ (c v) (independent? v)) cs vs))
   (cond
     [(empty? ics) (values #f #f)]
@@ -360,19 +475,19 @@
                   (values c v)]))
 
 (define (undefined-variables-in-equation eq)
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (filter undefined? vs))
 
 (define (dependent-variables-in-equation eq)
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (filter dependent? vs))
 
 (define (independent-variables-in-equation eq)
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (filter independent? vs))
 
 (define (find-dependent-variable eq)
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (findf dependent? vs))
 
 #;(define (add-dependency-to-independent-variable! v eq iv)
@@ -391,7 +506,7 @@
 ;   Remove the term containing v, if there is one.
 (define (remove-term eq v)
   (define s (serial v))
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (define (loop cs vs)
     (cond
       [(empty? cs)             (values cs vs)]
@@ -399,14 +514,14 @@
       [else                    (define-values (cs* vs*) (loop (cdr cs) (cdr vs)))
                                (values (cons (car cs) cs*) (cons (car vs) vs*))]))
   (define-values (cs* vs*) (loop cs vs))
-  (linear-equation cs* vs* k))
+  (combination cs* vs* k))
 
 ; remove-term* : linear-equation variable -> (values linear-equation coef)
 ;   Remove the term containing v, if there is one.
 ;   Return both equation and the coefficient of the removed variable.
 (define (remove-term* eq v)
   (define s (serial v))
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (define c-removed #f)
   (define (loop cs vs)
     (cond
@@ -416,7 +531,7 @@
       [else                    (define-values (cs* vs*) (loop (cdr cs) (cdr vs)))
                                (values (cons (car cs) cs*) (cons (car vs) vs*))]))
   (define-values (cs* vs*) (loop cs vs))
-  (values (linear-equation cs* vs* k) c-removed))
+  (values (combination cs* vs* k) c-removed))
 
 (define (zero-vector? xs)
   (for/and ([x (in-vector xs)])
@@ -426,7 +541,7 @@
   (or (and (number? x) (zero? x))
       (and (vector? x) (zero-vector? x))))
 
-(define (plus x [y #f])
+#;(define (plus x [y #f])
   (case y
     [(#f) x]
     [else (cond
@@ -449,7 +564,7 @@
                                     "number-or-vector1" x
                                     "number-or-vector2" y)])]))
 
-(define (minus x [y #f])
+#;(define (minus x [y #f])
   (case y
     [(#f) (cond
             [(number? x) (- x)]
@@ -488,10 +603,16 @@
                                         "to multiply two vectors, they must have the same length"
                                         "vec1" x
                                         "vec2" y))]
-            [(and (number? x) (vector? y))
-             (vector-map (λ (z) (* x z)) y)]
-            [(and (vector? x) (number? y))
-             (vector-map (λ (z) (* y z)) x)]
+            [(and (number? x) (vector? y))      (vector-map (λ (z) (* x z)) y)]
+            [(and (number? x) (tuple? y))       (tuple-map (λ (z) (mult x z)) y)]
+            [(and (number? x) (combination? y)) (if (= x 0) 0 (scale-combination x y))]           ; 0 combination?
+            [(and (number? x) (numeric? y))     (if (= x 0) 0 (combination (list x) (list y) 0))] ; 0 combination?
+
+            [(and (vector?      x) (number? y)) (vector-map (λ (z) (* y z)) x)]
+            [(and (tuple?       x) (number? y)) (tuple-map (λ (z) (mult y z)) x)]
+            [(and (numeric?     x) (number? y)) (if (= y 0) 0 (combination (list y) (list x) 0))]
+            [(and (combination? x) (number? y)) (if (= y 0) 0 (scale-combination y x))]
+            
             [else
              (raise-arguments-error 'multiply
                                     "expected either two numbers or two vectors"
@@ -499,27 +620,14 @@
                                     "number-or-vector2" y)])]))
 
 
-(define add
-  (let ()
-    (define termwise-add (make-termwise-binary-operator plus plus))
-    (λ (eq1 eq2) (termwise-add eq1 eq2))))
-
-(define subtract
-  (let ()
-    (define termwise-subtract (make-termwise-binary-operator minus minus))
-    (λ (eq1 eq2) (termwise-subtract eq1 eq2))))
-
-(define (scale k eq)
-  (define-values (eq* vanished) (map-coeffs (λ (c) (mult k c)) eq))
-  eq*)
 
 (define (isolate eq c v)
   ; Assumes c*v is a term of eq.
   (define eq-cv (remove-term eq v))
-  (scale (/ -1 c) eq-cv))
+  (scale-combination (/ -1 c) eq-cv))
 
 (define (reduce-known eq)
-  (match-define (linear-equation cs vs k) eq)
+  (match-define (combination cs vs k) eq)
   (define (loop cs vs known-k)
     (cond
       [(empty? cs) (values '() '() known-k)]
@@ -527,31 +635,31 @@
                    (define v (car vs))
                    (cond
                      [(known? v) (define k (value v))
-                                 (loop (cdr cs) (cdr vs) (plus (mult c k) known-k))]
+                                 (loop (cdr cs) (cdr vs) (+ (* c k) known-k))]
                      [else       (define-values (cs* vs* k*) (loop (cdr cs) (cdr vs) known-k))
                                  (values (cons c cs*) (cons v vs*) k*)])]))
   (loop cs vs k))
 
 (define (reduce-known! eq)
   (define-values (cs vs k) (reduce-known eq))
-  (set-linear-equation-coefs!    eq cs)
-  (set-linear-equation-vars!     eq vs)
-  (set-linear-equation-constant! eq k))
+  (set-combination-coefs!    eq cs)
+  (set-combination-vars!     eq vs)
+  (set-combination-constant! eq k))
 
 (define (eliminate-dependent eq dv)
   (define-values (eq-dv c) (remove-term* eq dv))
   (cond
-    [c (match-define (linear-equation cs  vs  k) eq-dv)
-       (define-values (eq* van) (add eq-dv (scale c (equation dv))))
+    [c (match-define (combination cs  vs  k) eq-dv)
+       (define-values (eq* van) (add-combination eq-dv (scale-combination c (equation dv))))
        eq*]
     [else
      eq]))
 
 (define (eliminate-dependent! eq dv)
   (define req (eliminate-dependent eq dv))
-  (set-linear-equation-coefs!    eq (linear-equation-coefs    req))
-  (set-linear-equation-vars!     eq (linear-equation-vars     req))
-  (set-linear-equation-constant! eq (linear-equation-constant req)))
+  (set-combination-coefs!    eq (combination-coefs    req))
+  (set-combination-vars!     eq (combination-vars     req))
+  (set-combination-constant! eq (combination-constant req)))
 
 (define (remove-all-dependent-variables! eq)
   (define dv (find-dependent-variable eq))
@@ -579,92 +687,100 @@
      #'(void
         (let ()
           ; Rewrite s1=s2 to s1-s2=0.         
-          (define-values (eq vanished) (subtract (linear-sum s1) (linear-sum s2)))
-         ; Make undefined variables in the equation independent.
-         (for ([u (undefined-variables-in-equation eq)])
-           (independent! u '() (list eq))) ; no deps, eq the introducing equation
-         ; Note: Remove all dependent variables from the equation.
-         ;       Dependent variables will only depend on independent variables.
-         ;(displayln (list "About to eliminate dependent variables" (~ eq)))
-         ;(displayln eq)
-         ;(displayln "---")
-         (remove-all-dependent-variables! eq)
-         #;(for ([dv (dependent-variables-in-equation eq)])
-             ; (displayln (~a "eliminating dep: " (~ dv)))
-             (eliminate-dependent! eq dv))
-         ;(displayln (list "Are all dependent variables gone?" (~ eq)))
-         ;(displayln eq)
+          ; (define-values (eq vanished) (subtract-combination (linear-sum s1) (linear-sum s2)))
+          (define eq (minus (linear-sum s1) (linear-sum s2)))
+          
+          (define (handle-eq eq)
+            ; Make undefined variables in the equation independent.
+            (for ([u (undefined-variables-in-equation eq)])
+              (independent! u '() (list eq))) ; no deps, eq the introducing equation
+            ; Note: Remove all dependent variables from the equation.
+            ;       Dependent variables will only depend on independent variables.
+            ;(displayln (list "About to eliminate dependent variables" (~ eq)))
+            ;(displayln eq)
+            ;(displayln "---")
+            (remove-all-dependent-variables! eq)
+            #;(for ([dv (dependent-variables-in-equation eq)])
+                ; (displayln (~a "eliminating dep: " (~ dv)))
+                (eliminate-dependent! eq dv))
+            ;(displayln (list "Are all dependent variables gone?" (~ eq)))
+            ;(displayln eq)
          
-         ; If any independent variables occur in the equation, they need to be
-         ; added to set of equations associated with independent variables.
-         #;(for ([iv (independent-variables-in-equation eq)])
-             (add-equation-to-independent-variable! eq iv))
+            ; If any independent variables occur in the equation, they need to be
+            ; added to set of equations associated with independent variables.
+            #;(for ([iv (independent-variables-in-equation eq)])
+                (add-equation-to-independent-variable! eq iv))
 
-         ; If at this point new variables have become known, they need to
-         ; be eliminated too.
+            ; If at this point new variables have become known, they need to
+            ; be eliminated too.
          
-         ; (displayln (list 'after-elimination-of-dependent-vars eq))
-         (match-define (linear-equation cs vs k) eq)
-         ; A constant equation with a non-zero constant represents k=0.
-         ; Signal an error
-         (when (and (empty? cs) (empty? vs)
-                    (not (zero? k)))
-           (raise-syntax-error '==
-                               "this relation led to inconsistent equations"
-                               #'error-loc))
+            ; (displayln (list 'after-elimination-of-dependent-vars eq))
+            (match-define (combination cs vs k) eq)
+            ; A constant equation with a non-zero constant represents k=0.
+            ; Signal an error
+            (when (and (empty? cs) (empty? vs)
+                       (not (zero? k)))
+              (raise-syntax-error '==
+                                  "this relation led to inconsistent equations"
+                                  #'error-loc))
 
-         (define-values (c v) (find-independent eq))
-         (cond
-           ; We found an independent variable, make it dependent.
-           [(and c v)
-            ; The dependencies in which the indendent v is used.
-            (define deps (dependencies v))
-            ; Isolate v in eq to get an equation for v.
-            (define deq (isolate eq c v))
+            (define-values (c v) (find-independent eq))
             (cond
-              [(constant-equation? deq)
-               ; The value for v is now known.
-               (known! v (linear-equation-constant deq))
-               ; The dependencies where v occurs can now be reduced.
-               (for ([d (in-list deps)])
-                 (define e (equation d))
-                 (reduce-known! e)
-                 ; If the reduced equation is a constant,
-                 ; then the dependent variable is (now also) known.
-                 (when (constant-equation? e)
-                   (define k (linear-equation-constant e))
-                   (known! (the-variable d) k)))
-               eq]
+              ; We found an independent variable, make it dependent.
+              [(and c v)
+               ; The dependencies in which the indendent v is used.
+               (define deps (dependencies v))
+               ; Isolate v in eq to get an equation for v.
+               (define deq (isolate eq c v))
+               (cond
+                 [(constant-combination? deq)
+                  ; The value for v is now known.
+                  (known! v (combination-constant deq))
+                  ; The dependencies where v occurs can now be reduced.
+                  (for ([d (in-list deps)])
+                    (define e (equation d))
+                    (reduce-known! e)
+                    ; If the reduced equation is a constant,
+                    ; then the dependent variable is (now also) known.
+                    (when (constant-combination? e)
+                      (define k (combination-constant e))
+                      (known! (the-variable d) k)))
+                  eq]
+                 [else
+                  ; The newly discovered dependency for v.
+                  (define new-dep (dependency v deq))
+                  ; The dependencies where the previously independent v occur.
+                  (define old-deps (dependencies v)) 
+                  ; Now v is dependent.
+                  (dependent! v new-dep)
+                  ; The new dependency might contain other independent variables.
+                  (for ([iv (independent-variables-in-equation deq)])
+                    (independent-add-dependency! iv new-dep))
+                  ; Update dependencies featuring v.
+                  (for ([d (in-list deps)])
+                    (define e (equation d))
+                    (eliminate-dependent!  e v)
+                    ; The elimination might introduce new independent variables in d.
+                    ; If so d must be added to the dependencies of the newly introduced variables.
+                    (for ([iv (independent-variables-in-equation e)])
+                      (unless (memq d (dependencies iv))
+                        (independent-add-dependency! iv d))))
+                  eq])]
+              ; No independent variable
               [else
-               ; The newly discovered dependency for v.
-               (define new-dep (dependency v deq))
-               ; The dependencies where the previously independent v occur.
-               (define old-deps (dependencies v)) 
-               ; Now v is dependent.
-               (dependent! v new-dep)
-               ; The new dependency might contain other independent variables.
-               (for ([iv (independent-variables-in-equation deq)])
-                 (independent-add-dependency! iv new-dep))
-               ; Update dependencies featuring v.
-               (for ([d (in-list deps)])
-                 (define e (equation d))
-                 (eliminate-dependent!  e v)
-                 ; The elimination might introduce new independent variables in d.
-                 ; If so d must be added to the dependencies of the newly introduced variables.
-                 (for ([iv (independent-variables-in-equation e)])
-                   (unless (memq d (dependencies iv))
-                     (independent-add-dependency! iv d))))
-               eq])]
-           ; No independent variable
-           [else
-            (displayln "all variables are dependent or known")])))]
+               (displayln "all variables are dependent or known")]))
+
+          (cond
+            [(combination? eq) (handle-eq eq)]
+            [(tuple? eq)       (for-each handle-eq (vector->list (elements eq)))]
+            [else              (error '==)])))]
     [(_ s1 s2 s3 ...)
      #'(begin (== s1 s2)
               (== s2 s3 ...))]))
 
 ;; Mediation. Notation in MetaFont/MetaPost t[x1,x2].
 (define (med t x1 x2)
-  (+ x1 (* t (- x2 x1))))
+  (plus x1 (mult t (minus x2 x1))))
 
 
 (define-syntax (linear-sum stx)
@@ -695,20 +811,30 @@
          (define (vanish? cv)      (general-zero? (car cv)))
          (define (compare cv1 cv2) (<= (serial (cdr cv1)) (serial (cdr cv2))))
          (define (serial= xs ys)   (= (serial (cdr xs)) (serial (cdr ys))))
-         (define (join cv1 cv2)    (cons (plus (car cv1) (car cv2)) (cdr cv1))) ; assumes v1=v2
+         (define (join cv1 cv2)    (cons (+ (car cv1) (car cv2)) (cdr cv1))) ; assumes v1=v2
 
-         (define terms                 (list (linear-term loc term) ...))
+         (define tuples+terms      (list (linear-term loc term) ...))
+         (define-values (tuples terms) (partition tuple?  tuples+terms))
          (define terms/dups            (sort terms compare))
          (define-values (cvs vanished) (uniqify-sorted terms/dups serial= join vanish?))
          (define cs                    (map car cvs))
          (define vs                    (map cdr cvs))
          (cond
-           ; note: compare with place `one` first, since it has the lowest serial 
-           [(and (not (empty? vs)) (eq? (car vs) one))
-            (define k (car cs))
-            (linear-equation (cdr cs) (cdr vs) k)]
-           [else
-            (linear-equation cs vs 0)])))]
+           [(empty? tuples) (cond
+                              ; note: compare with place `one` first, since it has the lowest serial 
+                              [(and (not (empty? vs)) (eq? (car vs) one))
+                               (define k (car cs))
+                               (combination (cdr cs) (cdr vs) k)]
+                              [else
+                               (combination cs vs 0)])]
+           [else (let loop ([sum    (first tuples)]
+                            [tuples (cdr tuples)])
+                   (if (empty? tuples)
+                       sum
+                       (loop (plus (first tuples) sum)
+                             (cdr tuples))))])))]
+            
+            
     ; Single term in sum.
     [(_linear-sum term)
      #:with loc (datum->syntax #f 'loc (with-syntax ([(_ t) stx]) #'t))
@@ -716,15 +842,22 @@
        (let ()
          (define cv (linear-term loc term))
          (cond
+           [(tuple? cv)
+            cv]
            [(eq? (cdr cv) one)
             (define k (car cv))
-            (linear-equation '() '() k)]
+            (combination '() '() k)]
            [else
-            (linear-equation (list (car cv)) (list (cdr cv)) 0)])))]))
+            (combination (list (car cv)) (list (cdr cv)) 0)])))]))
+
+
 
 
 (define-syntax (linear-term stx)
   ; (displayln (list 'linear-term (syntax->datum stx)))
+  ; A linear term can either evaluate to
+  ;     (cons number numeric-variable)
+  ; or  combination.
   (syntax-parse stx
     #:literals (* - first second)
     [(_linear-term loc (- (* e1 e2)))     #'(linear-term loc (* -1 e1 e2))]
@@ -737,55 +870,54 @@
      #'(let ()
          (define v1 e1)
          (define v2 e2)
-         (displayln (list 'v1 v1 'v2 v2))
+         (displayln (list 'zzz 'v1 v1 'v2 v2))
          (define cv
            (cond
-             [(and (number? v1) (number? v2))
-              (cons (* k v1 v2) one)]
-             [(and (number? v1) (variable? v2))
-              (cons (* k v1) v2)]
-             [(and (variable? v1) (number? v2))
-              (cons (* k v2) v1)]
-             [(and (number? v1) (vector? v2))
-              (cons (vector-map (λ (x) (* k v1 x)) v2) one)]
-             [(and (vector? v1) (number? v2))
-              (cons (vector-map (λ (x) (* k v2 x)) v1) one)]
+             [(and (number? v1)   (number? v2))    (cons (* k v1 v2) one)]
+             [(and (number? v1)   (variable? v2))  (cons (* k v1)     v2)]
+             [(and (variable? v1) (number? v2))    (cons (* k v2)     v1)]
+             [(and (number? v1)   (vector? v2))    (cons (vector-map (λ (x) (* k v1 x)) v2) one)]
+             [(and (vector? v1)   (number? v2))    (cons (vector-map (λ (x) (* k v2 x)) v1) one)]
+             [(and (number? v1)   (tuple? v2))     (tuple-map (λ (x) (mult (* k v1) x)) v2)]
+             [(and (tuple? v1)    (number? v2))    (tuple-map (λ (x) (mult (* k v2) x)) v1)]
              ; TODO: variable * vector ?             
              ; todo: can we allow a known variable here?
              [else 
               (raise-syntax-error
                'linear-term
-               "a product term must be between two numbers, or between a number and a variable"
+               "a product term must be between two numbers, or between a number and a numeric variable"
                #'error-loc)]))
          cv)]
     [(_linear-term loc (- e))
-     #'(let ()
+     (syntax/loc stx
+       (let ()
          (define v e)
+         (displayln (list 'yyy v))
          (cond
-           [(number? v)   (cons (- v) one)]
-           [(vector? v)   (cons (vector-map - v) one)]
-           [(variable? v) (cons -1 v)]
+           [(number?  v) (cons (- v) one)]
+           [(vector?  v) (make-tuple (vector-map - v))]
+           [(tuple?   v) (tuple-map minus v)]
+           [(numeric? v) (cons -1 v)]
            [else
             (raise-syntax-error
                'linear-term
                "negation expects a variable or an expression that evaluates to a number"
-               #'error-loc)]))]
+               #'error-loc)])))]
     [(_linear-term loc e)
      (syntax/loc #'loc
        (let ()
          (define v e)
+         (displayln (list 'xxx v))
          (cond
            [(number? v)   (cons v one)]
-           [(vector? v)   (cons v one)]
-           [(variable? v) (cons 1 v)]
+           [(numeric? v)  (cons 1 v)]
+           [(vector? v)   (make-tuple v)]           
+           [(tuple? v)    v]
            [else
             (raise-syntax-error
              'linear-term
-             "a numeric term must evaluate to a number or a variable"
+             "a numeric term must evaluate to a number, a numeric variable or a tuple"
              #'loc)])))]))
-    
-
-
 
 
 
@@ -810,9 +942,9 @@
   (define (add-local-variables! index vars)
     (for ([id (stx->list vars)]) (add-local-variable! index id))))
 
-;; SYNTAX PARAMETER  variables
+;; SYNTAX PARAMETER  show
 ;;   When applied expands to a list with the declared variables in scope.
-(define-syntax-parameter variables
+(define-syntax-parameter show
   (λ (stx) (with-syntax ([(id ...) module-level-declared-variables])
              #''(id ...))))
 
@@ -825,8 +957,8 @@
      (define ids (stx->list #'(id ...)))
 
      (define (get-outer-variables)
-       (local-expand(with-syntax ([variables (syntax-local-get-shadower #'variables)])
-                      #'(variables))
+       (local-expand(with-syntax ([variables (syntax-local-get-shadower #'show)])
+                      #'(show))
                     ctx '()))
      
      (define (do-define-ids)
@@ -865,7 +997,7 @@
           [new-scope?
            (add-local-variables! index #'(id ...))
            
-           (with-syntax ([variables               (format-id stx "variables")]
+           (with-syntax ([variables               (format-id stx "show")]
                          [(_quote (outer-id ...)) vars]
                          [index                   index]
                          [....                     #'(... ...)]
@@ -952,7 +1084,22 @@
                   (== b 2)
                   (== (med a b c) 7)
                   (list a b c))
-                '(1/2 2 12)))
+                '(1/2 2 12))
+  #;(check-equal? (let ()
+                  (declare x1 x2 x3 x4  y1 y2 y3 y4 k)
+                  (define z1 (tuple x1 y1))
+                  (define z2 (tuple x2 y2))
+                  (define z3 (tuple x3 y3))
+                  (define z4 (tuple x4 y4))
+                  ;; z4 -- z3
+                  ;; |     |
+                  ;; z1 -- z2
+
+                  ; z1 z4 is parallel to z2 32
+                  (== (- z4 z1) (* k (- z3 z2)))
+                  1)
+                1)
+  )
 
 ;(variables)                   ;                    ()
 ;(declare a b)
@@ -1004,3 +1151,17 @@
 ;  (displayln (~ c)))
 
   
+(let ()
+    (declare x1 x2 x3 y1 y2 y3)
+    (define z1 (tuple x1 y1))
+    (define z2 (tuple x2 y2))
+    (define z3 (tuple x3 y3))
+    ; z2 lies on the line from z1 to z3.
+    ; It's 1/4 of the way from z1.
+    (== z2 (med 1/4 z1 z3))
+    ; z1 is situated at origo (0,0)
+    (== z1 #(0 0))
+    ; The vector from z1 to z2 is (1,2).
+    (== (- z2 z1) #(1 2))
+    ; What are the points?
+    (list z1 z2 z3))

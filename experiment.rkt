@@ -1,4 +1,7 @@
 #lang racket
+;; TODO:
+;;  - fix formatting
+;;  - add tuples
 
 (require "variables.rkt"
          syntax/stx
@@ -16,16 +19,17 @@
 ;            |   (+ terms ...)
 ;            |   (- terms ...)
 ; terms     :=   term
+;            |   (med numeric numeric numeric)   ; (med a b c) = b+a*(c-b)
 ;            |   (+ terms ...)
 ;            |   (- terms ...)
 ; term      :=   product
 ; product   :=   numeric
-;            |   (* number ... numeric) ; order of factors not important
+;            |   (* number ... numeric)          ; order of factors not important
 ;            |   (- product)
 ;            |   (+ product)
 ; numeric   :=   number
 ;            |   variable
-;            |   expression             ; that evaluates to a number or variable
+;            |   expression                      ; that evaluates to a number or variable
 
 ;;; Representation
 ;;   - numeric   is a number or as a variable
@@ -34,6 +38,10 @@
 ;;   - terms     is represented as a list of product
 ;;   - sum       is represented as a list of product
 ;;   - equation  is represented as a list of list of product
+
+;; Mediation. Notation in MetaFont/MetaPost t[x1,x2].
+(define (med t x1 x2)
+  (+ x1 (* t (- x2 x1))))
 
 
 ;;; DECLARED VARIABLES
@@ -167,10 +175,11 @@
 
   (define-syntax-class terms
     #:description "terms"
-    #:literals (+ -)
-    (pattern t:term)
+    #:literals (+ - med)
     (pattern (+ tss:terms ...))
-    (pattern (- tss:terms ...)))
+    (pattern (- tss:terms ...))
+    (pattern (med a:numeric b:numeric c:numeric))
+    (pattern t:term))
 
   (define-syntax-class sum
     #:description "sum"
@@ -317,13 +326,16 @@
          
 (define-syntax (terms stx)
   (syntax-parse stx    
-    #:literals (+ -)
-    [(_terms (+ tss:terms ...))           #'(append (terms tss) ...)]
-    [(_terms (- t:term))                  #'(negate-coefficents (terms t))]
-    [(_terms (- ts:terms tss:terms ...))  #'(append (terms ts)
-                                                    (negate-coefficents (append (terms tss) ...)))]
-    [(_terms t:term)                      #'(let ([cv (term t)])
-                                              (if (null? cv) '() (list cv)))]))
+    #:literals (+ - med)
+    [(_terms (+ tss:terms ...))               #'(append (terms tss) ...)]
+    [(_terms (- t:term))                      #'(negate-coefficents (terms t))]
+    [(_terms (- ts:terms tss:terms ...))      #'(append (terms ts)
+                                                        (negate-coefficents (append (terms tss) ...)))]
+    [(_terms (med a b c))                     (syntax/loc stx
+                                                ; b+a(c-b) = b+ac-ab
+                                                (terms (+ b (* a c) (* -1 a b))))]    
+    [(_terms t:term)                          #'(let ([cv (term t)])
+                                                  (if (null? cv) '() (list cv)))]))
 
 (define-syntax (sum stx)
   (syntax-parse stx
