@@ -1,6 +1,7 @@
 #lang racket
 
 (require "variables.rkt"
+         syntax/stx
          racket/stxparam)
 
 (require (for-syntax racket/syntax
@@ -27,8 +28,8 @@
 ;            |   expression             ; that evaluates to a number or variable
 
 ;;; Representation
-;;   - numeric   is a number or as a symbol
-;;   - product   is represented as a (cons number symbol) or (cons number 1)
+;;   - numeric   is a number or as a variable
+;;   - product   is represented as a (cons number variable) or (cons number 1)
 ;;   - term      is represented as a product
 ;;   - terms     is represented as a list of product
 ;;   - sum       is represented as a list of product
@@ -208,7 +209,7 @@
     [(_numeric n:numeric)
      (syntax-parse #'n
        [x:number         #'x]
-       [v:variable       #''v]
+       [v:variable       #'v]
        [e:expr
         (syntax/loc #'e
           (with-top (let ([v e])
@@ -230,6 +231,8 @@
                                    #'e))
              v)))]))
 
+
+                 
 
 (define-syntax (product stx)
   (syntax-parse stx
@@ -265,7 +268,12 @@
        ; One variable v0 present => no variables allowed in the expressions
        [(and (= (length vs) 1) (= (length es) 0))
         (with-syntax ([n ns-prod] [(v0 . more) vs])
-          #'(cons n v0))]
+          #'(let ([v v0])
+              ; If v0 is known, it will evaluate to a number.
+              ; If v0 is unknown, it evaluates to a variable.              
+              (cond
+                [(number? v) (cvs-make-constant (* v n))]
+                [else        (cons n v0)])))]
        [(and (= (length vs) 1))
         (with-syntax ([n ns-prod] [(v0 . more) vs] [(e ...) es])
           #'(let ([ns (list (number-expression e) ...)])
@@ -296,12 +304,9 @@
     ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
     [(_product n:numeric)
      (syntax-parse #'n
-       [n:number   #'(cons n 1)]
-       [v:variable #'(cons 1 'v)]
-       [e:expr     #'(let ([v (numeric e)])
-                       (if (number? v)
-                           (cons v 1)
-                           (cons 1 v)))])]))
+       [n:number   #'(cvs-make-constant n)]
+       [v:variable #'(cvs-make-constant-or-variable v)]
+       [e:expr     #'(cvs-make-constant-or-variable (numeric e))])]))
      
 (define-syntax (term stx)
   (syntax-parse stx
@@ -317,7 +322,8 @@
     [(_terms (- t:term))                  #'(negate-coefficents (terms t))]
     [(_terms (- ts:terms tss:terms ...))  #'(append (terms ts)
                                                     (negate-coefficents (append (terms tss) ...)))]
-    [(_terms t:term)                      #'(list (term t))]))
+    [(_terms t:term)                      #'(let ([cv (term t)])
+                                              (if (null? cv) '() (list cv)))]))
 
 (define-syntax (sum stx)
   (syntax-parse stx
@@ -337,20 +343,90 @@
 (define-syntax (== stx)
   (syntax-parse stx
     #:literals (==)
-    [(_== s1:sum)                     #'(list (==1 s1 0))]
-    [(_== s1:sum s2:sum)              #'(list (==1 s1 s2))]
-    [(_-- s1:sum s2:sum ss:sum ...)   #'(cons (==1 s1 s2)
-                                              (== s2 ss ...))]))
+    [(_== s1:sum)                     #'(resolve (list (==1 s1 0))  (list #'_==))]
+    [(_== s1:sum s2:sum)              #'(resolve (list (==1 s1 s2)) (list #'_==))]
+    [(_== s1:sum s2:sum ss:sum ...)   #'(resolve (cons (==1 s1 s2)
+                                                       (== s2 ss ...))
+                                                 (list #'_==))]))
+
+(define (resolve cvss stxlocs)
+  ;; 1. Make undefined variables in the equation independent.
+  (for ([cvs (in-list cvss)])
+    (for ([u (cvs-undefined-variables cvs)])
+      (independent! u '() (list cvs)))) ; no deps, remember the introducing equation
+
+  ;; 2. Remove all dependent variables from the equations.
+  ;;    Invariant:  Dependent variables will only depend on independent variables.
+  (define cvss* (map cvs-eliminate-all-dependent cvss))
+
+  ;; 3. A constant equation with a non-zero constant represents k=0 (e.g. 1=0).
+  ;;    Signal an error.
+  (for ([cvs cvss*] [stxloc (stx->list stxlocs)])
+    (when (cvs-non-zero-constant? cvs)
+      (raise-syntax-error '==
+                          "this relation led to inconsistent equations"
+                          stxloc)))
+
+  ;; 4. If the equations contain an independent variable,
+  ;;    we can isolate it and make it dependent.
+  (for ([cvs cvss*])
+    (define icv (cvs-find-independent cvs))
+    (cond
+      [icv
+       ; We found an independent variable, make it dependent.
+       (define c (car icv))
+       (define v (cdr icv))
+       ; The dependencies in which the indendent v is used.
+       (define deps (dependencies v))
+       ; Isolate v in eq to get an equation for v.
+       (define v= (cvs-isolate cvs v))
+       (cond
+         ; If v is constant, we can make it known.
+         [(cvs-constant? v=)
+          (known! v (cvs-constant v=))
+          ; The dependencies where v occurs can now be reduced.
+          (for ([d (in-list deps)])
+            (define e  (dependency-cvs d))
+            (define re (cvs-reduce-known e))
+            (set-dependency-cvs! d re)
+            ; If the reduced equation is a constant,
+            ; then the dependent variable is (now also) known.
+            (when (cvs-constant? re)
+              (define k (cvs-constant re))
+              (known! (the-variable d) k)))]
+         ; If v is not a constant, then v must change from independent to dependent.
+         [else
+          ; The newly discovered dependency for v.
+          (define new-dep (dependency v v=))
+          ; Now v is dependent.
+          (dependent! v new-dep)
+          ; The new dependency might contain other independent variables.
+          (for ([iv (cvs-independent-variables v=)])
+            (independent-add-dependency! iv new-dep))
+          ; Update dependencies featuring v.
+          (for ([d (in-list deps)])
+            (define e  (dependency-cvs d))
+            (define re (cvs-eliminate-dependent e v))
+            (set-dependency-cvs! d re)
+            ; The elimination might introduce new independent variables in d.
+            ; If so d must be added to the dependencies of the newly introduced variables.
+            (for ([iv (cvs-independent-variables re)])
+              (unless (memq d (dependencies iv))
+                (independent-add-dependency! iv d))))])]
+      ; No new independent variables.
+      [else (void)]))
+  (void 'done))
+
+
 
 (define (cv<= cv1 cv2)
   (variable<= (cdr cv1) (cdr cv2)))
 
 (define (variable<= v1 v2)
-  (or (eqv? v1 1)
-      (and (not (eqv? v1 v2))
-           (<= (serial v1) (serial v2)))))
-; For symbols as variables:
-#;(string<=? (symbol->string v1) (symbol->string v2))
+  (cond
+    [(eqv? v1 1)                   #t]
+    [(eqv? v2 1)                   #f]
+    [else                          (<= (serial v1) (serial v2))]))
 
 (define (variable= v1 v2)
   (equal? v1 v2))
@@ -389,6 +465,19 @@
   ; If there is a constant term, the first variable is 1.
   (map cdr cvs))
 
+(define (remove-head-one xs)
+  (cond
+    [(null? xs)                 xs]
+    [(equal? (cdar xs) 1) (cdr xs)]
+    [else                      xs]))
+
+(define (cvs-undefined-variables cvs)
+  (filter undefined? (cvs-variables (remove-head-one cvs))))
+(define (cvs-independent-variables cvs)
+  (filter independent? (cvs-variables (remove-head-one cvs))))
+(define (cvs-dependent-variables cvs)
+  (filter dependent? (cvs-variables (remove-head-one cvs))))
+
 (define (cvs-coeffs cvs)
   ; If there is a constant term, the first coefficient is the constant.
   (map car cvs))
@@ -401,8 +490,26 @@
                      (car cv)
                      0)]))
 
+(define (cvs-make-constant k)
+  (if (= k 0) '() (cons k 1)))
+
+(define (cvs-make-constant-or-variable v)
+  (if (number? v)
+      (cvs-make-constant v)
+      (cons 1 v)))
+
 (define (cvs-zero? cvs)
   (null? cvs))
+
+(define (cvs-constant? cvs)
+  (or (null? cvs)
+      (and (null? (cdr cvs))
+           (eqv? (cdar cvs) 1))))
+
+(define (cvs-non-zero-constant? cvs)
+  (and (not (null? cvs))
+       (eqv?  (cdar cvs) 1)
+       (null? (cdr cvs))))
 
 (define (cvs-add-cv cvs cv)
   ; - returns cvs in sorted order without 0 as coef.
@@ -512,3 +619,70 @@
   (if (null? cvs*)
       #f
       (argmax (λ (cv) (abs (car cv))) cvs*)))
+
+(define (cvs-eliminate-dependent u dv)
+  (cvs-substitute u dv (dependency-cvs (the-dependency dv))))
+
+(define (cvs-eliminate-all-dependent u)
+  (define dvs (cvs-dependent-variables u))
+  (foldl (λ (dv u) (cvs-eliminate-dependent u dv))
+         u dvs))
+
+; cvs-find-independent : cvs -> (cons coef independent-variable)
+;           or         : cvs -> #f
+;   Find the independent variable with the greatest absolute value.
+(define (cvs-find-independent cvs)
+  (define (independent-term? cv)
+    (define v (cdr cv))
+    (and (not (eqv? v 1)) (independent? v)))
+  (define icvs (filter independent-term? cvs))
+  (if (null? icvs) #f (argmax car icvs)))
+
+(define (known-variable? x)
+  (and (variable? x)
+       (known? x)))
+
+(define (cvs-reduce-known cvs)
+  (define k 0)
+  (define cvs* (let loop ([cvs cvs])
+                 (cond
+                   [(null? cvs) '()]
+                   [else        (define cv (car cvs))
+                                (cond
+                                  [(known-variable? (cdr cv))
+                                   (define kv (value (cdr cv)))
+                                   (set! k (+ (* (car cv) kv) k))
+                                   (loop (cdr cvs))]
+                                  [else
+                                   (cons cv (loop (cdr cvs)))])])))
+  ; Add the accumulated constants as the first cv,
+  ; unless the constant is zero.
+  (cond
+    [(null? cvs*)         (list (cons k 1))]
+    [(eqv? (cdar cvs*) 1) (define cv (car cvs*))
+                          (define k* (+ (car cv) k))
+                          (if (= k* 0)
+                              (cdr cvs*)
+                              (cons (cons k* 1) (cdr cvs*)))]
+    [else                 (if (= k 0)
+                              cvs*
+                              (cons (cons k 1) cvs*))]))
+
+;(define (reduce-known! eq)
+;  (define-values (cs vs k) (reduce-known eq))
+;  (set-combination-coefs!    eq cs)
+;  (set-combination-vars!     eq vs)
+;  (set-combination-constant! eq k))
+
+#;(define (eliminate-dependent! eq dv)
+    (define req (eliminate-dependent eq dv))
+    (set-combination-coefs!    eq (combination-coefs    req))
+    (set-combination-vars!     eq (combination-vars     req))
+    (set-combination-constant! eq (combination-constant req)))
+
+#;(define (remove-all-dependent-variables! eq)
+    (define dv (find-dependent-variable eq))
+    (when dv
+      (eliminate-dependent! eq dv)
+      (remove-all-dependent-variables! eq)))
+

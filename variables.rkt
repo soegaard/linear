@@ -29,7 +29,7 @@
 (struct variable (serial name state)
   #:transparent
   #:mutable
-  #:methods gen:custom-write [(define write-proc custom-write-variable)]
+  ; #:methods gen:custom-write [(define write-proc custom-write-variable)]
   )
 
 (struct state                    ()                      #:transparent #:mutable)
@@ -65,24 +65,24 @@
 
 (define (value v)          (known-state-value              (variable-state v)))
 (define (equation v)
-  (cond [(dependency? v)  (dependency-equation v)]
+  (cond [(dependency? v)  (dependency-cvs v)]
         [(independent? v) (independent-state-equation     (variable-state v))]
         [(dependent? v)   (equation (dependent-state-dependency (variable-state v)))]        
         [else             (error 'equation)]))
 (define (dependencies v)   (independent-state-dependencies (variable-state v)))
 (define (the-dependency v) (dependent-state-dependency     (variable-state v)))
 
-(define (equations iv) (map dependency-equation (dependencies iv)))
+(define (equations iv) (map dependency-cvs (dependencies iv)))
 
 (define one      (variable (serial) 'one      (known-state 1)))
 ; (define one-zero (variable (serial) "#(1 0)"  (known-state 2)))
 ; (define zero-one (variable (serial) "#(0 1)"  (known-state 3)))
 
 (define (independent! v deps eq) (set-variable-state! v (independent-state deps eq)))
-(define (dependent!   v deps)    (set-variable-state! v (dependent-state deps)))
+(define (dependent!   v dep)     (set-variable-state! v (dependent-state dep)))
 (define (known!       v k)       (set-variable-state! v (known-state k)))
 
-(struct dependency (variable equation) #:transparent #:mutable)
+(struct dependency (variable cvs) #:transparent #:mutable)
 (define (the-variable d) (dependency-variable d))
 
 (define (independent-add-dependency! v d)
