@@ -1,7 +1,18 @@
 #lang racket
 ;; TODO:
 ;;  - fix formatting
-;;  - add tuples
+
+; > (declare-vector z)
+; > (declare a b)
+; > (== z (vector a 20))
+; > (== z (vector 30 b))
+; > z
+; '#(30 20)
+; > a
+; 30
+; > b
+; #0=(variable 5 'b (dependent-state (dependency #0# (list (cons 1 (variable 3 "z.1" (known-state 20))))) #f))
+
 
 (require "variables.rkt"
          syntax/stx
@@ -83,30 +94,82 @@
 ;;   Declare that the variables id ... are "declared" variables.
 (define-syntax (declare stx)
   (syntax-parse stx
-    [(_declare id ...)
+    [(_declare (~alt id:id
+                     [n:number vector-id:id ...]) 
+               ...)
+     ; Turn n ... into ((n ...) ...) (i.e. ns to nss)
+     ; so we can use [vector-id n] ... in the template.
+     (define ns    (syntax->list #'(n ...)))
+     (define vidss (syntax->datum #'((vector-id ...) ...)))
+     (define nss   (for/list ([n    (in-list ns)]
+                              [vids (in-list vidss)])
+                     (map (λ (x) n) vids)))
+     (with-syntax ([((n ...) ...) nss])
+       (syntax/loc stx
+         (declare [id 1] ... [vector-id n] ... ...)))]
+     
+    [(_declare [id:id n:number] ...)
      (define ids (stx->list #'(id ...)))
+     (define ns  (stx->list #'(n ...)))
 
      (define (get-outer-variables)
        (local-expand(with-syntax ([show (syntax-local-get-shadower #'show)])
                       #'(show))
                     ctx '()))
-     
-     (define (do-define-ids)
-       (with-syntax ([($id ...) (for/list ([id ids]) (format-id stx "$~a" id))])
+     (define (do-define-numeric-id id)
+       (define $id (format-id stx "$~a" id))
+       (with-syntax ([$id $id] [id id])
          #'(begin
-             (define $id (variable (serial) 'id (undefined-state))) ...
+             (define $id (variable (serial) 'id (undefined-state)))
              (define-syntax id (λ (stx)
                                  #'(let ()
                                      (define v $id)
                                      (cond
-                                       [(known?        v) (value v)]
-                                       [(undefined?    v) v]
-                                       [(independent?  v) v]
-                                       [(dependent?    v) v]
-                                       [(tuple?        v) v]
-                                       [else
-                                        (displayln v)
-                                        (error 'unknown)])))) ...)))
+                                       [(known? v) (value v)]
+                                       [else              v])))))))
+     (define (get-$id-from-def def)
+       (syntax-parse def
+         [(_begin (_define $id _) . _) #'$id]))
+          
+     (define (do-define-id id n)
+       (define m (syntax-e n))
+       (cond
+         [(= m 1) (do-define-numeric-id id)]
+         [else    (define name  (symbol->string (syntax-e id)))
+                  (define sym   (string->symbol name))
+                  (define names (for/list ([i m])
+                                  (string->symbol (string-append name (number->string i)))))
+                  (displayln names)
+                  (define ids   (for/list ([name names]) (datum->syntax id name id)))
+                  (define defs  (for/list ([id   ids])   (do-define-numeric-id id)))
+                  (define $ids  (map get-$id-from-def defs))
+                  (define $$id  (format-id stx "$$~a" id))
+                  (with-syntax ([(def    ...) defs]
+                                [($id ...)    $ids]
+                                [(name.i ...) names]
+                                [(id.i   ...) ids]                                
+                                [sym          sym]
+                                [tuple        $$id]
+                                [id           id])
+                    #'(begin
+                        ; define the elements variables
+                        def ...
+                        ; our
+                        (define tuple (variable (serial) 'sym (tuple-state (vector id.i ...))))
+                        (set-variable-state! $id (independent-state '() #f tuple))
+                        ...
+                        (define-syntax id (λ (stx)
+                                            #'(let ()
+                                                (define v tuple)
+                                                (if (known? v)
+                                                    (value v)
+                                                    v))))))]))
+     
+     (define (do-define-ids)
+       (define defines (map do-define-id ids ns))
+       (with-syntax ([(def ...) defines])
+         #'(begin
+             def ...)))
      
      ; - the expansion of `declare` depends on where it is used.
      (define ctx (syntax-local-context))
@@ -144,6 +207,24 @@
            (do-define-ids)])])]))
 
 
+;; (declare-vector   z1 z2 ...) declares vectors of dimension 2
+;; (declare-vector n z1 z2 ...) declares vectors of dimension n
+
+(define-syntax (declare-vector stx)
+  (syntax-parse stx
+    [(_declare-vector id:id ...)
+     #'(declare-vector 2 id ...)]     
+    [(_declare-vector n:integer id:id ...)
+     (define ids (syntax->list #'(id ...)))
+     (with-syntax ([($id ...) (for/list ([id ids]) (format-id stx "$~a" id))])
+       #'(begin
+           (define $id (new-tuple n 'id)) ...
+           (define-syntax id (λ (stx)
+                               #'(let ()
+                                   (define v $id)
+                                   (if (known? v)
+                                       (value v)
+                                       v)))) ...))]))
 
 (begin-for-syntax
 
@@ -369,23 +450,91 @@
                                                  (list #'_==))]))
 
 (define (generate-ith-equations cvs i)
-  ; TODO: ...
-  cvs)
+  (define (tuple-ref v i)
+    (vector-ref (tuple-state-tuple (variable-state v)) i))
+  
+  (define cvs-unordered
+    (let loop ([cvs cvs])
+      (cond
+        [(null? cvs) '()]
+        [else        (define cv (car cvs))
+                     (define c  (car cv))
+                     (define v  (cdr cv))
+                     (cond
+                       [(equal? v 1)       (cons cv (loop (cdr cvs)))]
+                       [(vector? (name v)) (define vi (vector-ref (name v) i))
+                                           (cond
+                                             [(number? vi) (cons (cons (* c vi) 1)
+                                                                 (loop (cdr cvs)))]
+                                             [else         (cons (cons c vi)
+                                                                 (loop (cdr cvs)))])]
+                       [(tuple-var? v)     (define vi (tuple-ref v i))
+                                           (cond
+                                             [(number? vi) (cons (cons (* c vi) 1)
+                                                                 (loop (cdr cvs)))]
+                                             [(known? vi)  (cons (cons (* c (value vi)) 1)
+                                                                 (loop (cdr cvs)))]
+                                             [else         (cons (cons c vi)
+                                                                 (loop (cdr cvs)))])]                        
+                       [else               (cons cv (loop (cdr cvs)))])])))
+  (canonical cvs-unordered))
+
+(define new-tuple
+  (let ([i 0])
+    (λ (n id)
+      (define id0    (if (symbol? id) (symbol->string id) id))
+      (define name   (string-append id0 #;(number->string i)))
+      (define name.s (for/list ([j n])
+                       (string-append id0 #;(number->string i) "." (number->string j))))
+      
+      (set! i (+ i 1))
+      (define tuple (variable (serial) name #f))
+      (define vec   (for/vector ([j n] [name.j name.s])
+                      (variable (serial) name.j (independent-state '() #f tuple))))
+      (define s     (tuple-state vec))
+      (set-variable-state! tuple s)
+      tuple)))
+
+(define (maybe-known-tuple! t)
+  ; If all elements are known, the tuple is also known.
+  (when t
+    (define ts (variable-state t))
+    (define es (tuple-state-tuple ts))
+    (cond
+      [(for/and ([e (in-vector es)]) (known? e))
+       (define v (for/vector ([e (in-vector es)]) (value e)))
+       (known! t v)]
+      [else
+       (void)])))
+
 
 (define (rewrite-vector-variables cvs stxloc)
-  (define (vector-variable? v) (and (variable? v) (vector? (name v))))
+  ; A literal vector arrives here as an undefined variable whose name is a vector.
+  ; A tuple variable contains a vector of variables.
+  (define (vector-variable? v)
+    (and (variable? v)
+         (or (vector? (name v))
+             (tuple-var? v))))  
+  (define (->vector v)
+    (define n (name v))
+    (cond
+      [(vector? n)    n]
+      [(tuple-var? v) (tuple-state-tuple (variable-state v))]
+      [else           (error '->vector "got: ~a" v)]))
+  
   (define  vars (cvs-variables cvs))
   (define vvars (filter vector-variable? vars))
-  (define vecs  (map name vvars))
+  (define vecs  (map ->vector vvars))
   (cond
     ; If there are no vector variables, we simply return our equation.
     [(null? vvars) (list (list cvs stxloc))]
     ; Otherwise, we must make an equation from each vector index.
     [else          (define dims (map vector-length vecs))
+                   (define dim (car dims))
                    (unless (apply = dims)
                      (raise-syntax-error
-                      '== "all vectors must have the same length" stxloc))
-                   (for/list ([i dims])
+                      '== "all vectors must have the same length" stxloc))                   
+                   (for/list ([i dim])
                      (list (generate-ith-equations cvs i)
                            stxloc))]))
 
@@ -426,12 +575,15 @@
        (define v (cdr icv))
        ; The dependencies in which the indendent v is used.
        (define deps (dependencies v))
+       ; And the tuple it is an element of (if any).
+       (define tup  (independent-state-tuple (variable-state v)))
        ; Isolate v in eq to get an equation for v.
        (define v= (cvs-isolate cvs v))
        (cond
          ; If v is constant, we can make it known.
          [(cvs-constant? v=)
           (known! v (cvs-constant v=))
+          (maybe-known-tuple! tup)
           ; The dependencies where v occurs can now be reduced.
           (for ([d (in-list deps)])
             (define e  (dependency-cvs d))
@@ -440,14 +592,17 @@
             ; If the reduced equation is a constant,
             ; then the dependent variable is (now also) known.
             (when (cvs-constant? re)
-              (define k (cvs-constant re))
-              (known! (the-variable d) k)))]
+              (define k  (cvs-constant re))
+              (define dv (the-variable d))
+              (define t  (dependent-state-tuple (variable-state dv)))
+              (known! dv k)
+              (maybe-known-tuple! t)))]
          ; If v is not a constant, then v must change from independent to dependent.
          [else
           ; The newly discovered dependency for v.
           (define new-dep (dependency v v=))
           ; Now v is dependent.
-          (dependent! v new-dep)
+          (dependent! v new-dep tup)
           ; The new dependency might contain other independent variables.
           (for ([iv (cvs-independent-variables v=)])
             (independent-add-dependency! iv new-dep))
@@ -733,4 +888,3 @@
     (when dv
       (eliminate-dependent! eq dv)
       (remove-all-dependent-variables! eq)))
-

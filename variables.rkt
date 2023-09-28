@@ -32,14 +32,14 @@
   ; #:methods gen:custom-write [(define write-proc custom-write-variable)]
   )
 
-(struct state                    ()                      #:transparent #:mutable)
-(struct undefined-state   state  ()                      #:transparent #:mutable) ; 1. Variables start here, when declared.
+(struct state                    ()                            #:transparent #:mutable)
+(struct undefined-state   state  ()                            #:transparent #:mutable) ; 1. Variables start here, when declared.
 ; Numeric
-(struct independent-state state  (dependencies equation) #:transparent #:mutable) ; 2. Once indepedent, it never becomes undefined again.
-(struct dependent-state   state  (dependency)            #:transparent #:mutable) ; 3. Once dependent,  it almost never becomes independent again.
-(struct known-state       state  (value)                 #:transparent #:mutable) ; 4. Once known,      it never becomes dependent again.
+(struct independent-state state  (dependencies equation tuple) #:transparent #:mutable) ; 2. Once indepedent, it never becomes undefined again.
+(struct dependent-state   state  (dependency tuple)            #:transparent #:mutable) ; 3. Once dependent,  it almost never becomes independent again.
+(struct known-state       state  (value)                       #:transparent #:mutable) ; 4. Once known,      it never becomes dependent again.
 ; Tuples
-(struct tuple-state       state  (tuple)                 #:transparent #:mutable)
+(struct tuple-state       state  (tuple)                       #:transparent #:mutable)
 
 ; Known:       The value of the variable is known (and stored in the variable).
 ; Dependent:   The `dependencies` expresses the variable in terms as a weighted
@@ -47,6 +47,9 @@
 ; Independent: Value unknown and can't be computed yet.
 ;              - equation is the variable in which the variable was introduced
 ;              - dependencies is a list of dependency, in which the independent variable is part of
+;              - if non-#f, the independent variable is an element of this tuple
+;                (if a variable becomes known and is the last remaining unknown element
+;                 of the tuple, the tuple itself becomes known)
 ; Undefined:   Haven't appeared before.
 
 ; A depedent variable can turn back into an indepedent variable,
@@ -75,12 +78,10 @@
 (define (equations iv) (map dependency-cvs (dependencies iv)))
 
 (define one      (variable (serial) 'one      (known-state 1)))
-; (define one-zero (variable (serial) "#(1 0)"  (known-state 2)))
-; (define zero-one (variable (serial) "#(0 1)"  (known-state 3)))
 
-(define (independent! v deps eq) (set-variable-state! v (independent-state deps eq)))
-(define (dependent!   v dep)     (set-variable-state! v (dependent-state dep)))
-(define (known!       v k)       (set-variable-state! v (known-state k)))
+(define (independent! v deps eq [tuple #f]) (set-variable-state! v (independent-state deps eq tuple)))
+(define (dependent!   v dep     [tuple #f]) (set-variable-state! v (dependent-state dep tuple)))
+(define (known!       v k)                  (set-variable-state! v (known-state k)))
 
 (struct dependency (variable cvs) #:transparent #:mutable)
 (define (the-variable d) (dependency-variable d))
