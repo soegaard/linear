@@ -2,10 +2,6 @@
 ;; TODO:
 ;;  - fix formatting
 
-; > (declare [2 v])
-; (v0 v1)
-; > (== v (* 2 (- #(1 2) #(3 4))))
-
 (require "variables.rkt"
          syntax/stx
          racket/stxparam)
@@ -292,9 +288,13 @@
     (error 'make-vector-variable "expected a vector, got: ~a" v))
   (variable (serial) v (undefined-state)))
 
+(define (cvs-make-vector-variable v)
+  (list (cons 1 (make-vector-variable v))))
+
 
 (define-syntax (numeric stx)
-(define (d n) (displayln n))
+  ;(define (d n) (displayln n))
+  (define (d n) (void))
   (syntax-parse stx
     [(_numeric n:numeric)
      (syntax-parse #'n
@@ -327,19 +327,28 @@
              v)))]))
 
 
-                 
+(define (cvs-negate cvs)
+  (map (λ (cv) (cons (- (car cv)) (cdr cv))) cvs))                 
+
+(define (vector* x vs)
+  (define (vec* u v)
+    (for/vector ([ui (in-vector u)]
+                 [vi (in-vector v)])
+      (* ui vi)))
+  (define (konstant* k v)
+    (for/vector ([vi (in-vector v)])
+      (* k vi)))
+  (konstant* x (foldl vec* (car vs) (cdr vs))))
+    
 
 (define-syntax (product stx)
   (syntax-parse stx
     #:literals (* - +)
-    [(_product (- p:product))                 #'(let ()
-                                                  (define cv (product p))
-                                                  (cons (* -1 (car cv)) (cdr cv)))]
+    [(_product (- p:product))                 #'(cvs-negate (product p))]
     [(_product (+ p:product))                 #'(product p)]
     ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
     
     [(_product (* f ...))
-     (displayln '(* f ...))
      ; A factor f can be either a number, a (declared) variable,
      ; a nested product of the form (* f ...) or an expression.
      (define (number-datum? f) (number? (syntax-e f)))
@@ -375,15 +384,15 @@
               ; If v0 is unknown, it evaluates to a variable.              
               (cond
                 [(number? v) (cvs-make-constant (* v n))]
-                [else        (cons n v0)])))]
+                [else        (list (cons n v0))])))]
        [(and (= (length vs) 1))
         (with-syntax ([n ns-prod] [(v0 . more) vs] [(e ...) es])
           #'(let ([ns (list (number-expression e) ...)])
-              (cons (* n (apply * ns)) v0)))]
+              (list (cons (* n (apply * ns)) v0))))]
        ; No variable present => one variable allowed in the expressions
        [(and (= (length vs) 0) (= (length es) 0))
         (with-syntax ([n ns-prod])
-          #'(cons n 1))]
+          #'(list (cons n 1)))]
        [(= (length vs) 0)
         (with-syntax ([n ns-prod] [(e ...) es]
                       [(_product p)  stx])            
@@ -398,11 +407,12 @@
                                     "more than one expression evaluated to a variable"
                                     #'p))
               (cond
-                [(null? vs) (cons (* n m) 1)]
-                [(null? us) (cons (* n m) (car vs))]
-                [else       ('todo)]))))])]
+                [(null? vs) (list (cons (* n m) 1))]
+                [(null? us) (list (cons (* n m) (car vs)))]
+                [else       (if (= (* m n) 0)
+                                '()
+                                (cvs-make-vector-variable (vector* (* n m) (map name us))))]))))])]
     [(_product n:numeric)
-     (displayln '(numeric-product))
      (syntax-parse #'n
        [n:number   #'(cvs-make-constant n)]
        [v:variable #'(cvs-make-constant-or-variable v)]
@@ -412,18 +422,14 @@
   (syntax-parse stx
     [(_term p:product)  #'(product p)]))
 
-
-(define (negate-coefficents cvs)
-  (map (λ (cv) (cons (- (car cv)) (cdr cv))) cvs))
          
 (define-syntax (terms stx)
   (syntax-parse stx    
     #:literals (+ - * med)
     [(_terms (+ tss:terms ...))               #'(append (terms tss) ...)]
-    [(_terms (- t:term))                      #'(negate-coefficents (terms t))]
-    [(_terms (- ts:terms tss:terms ...))      (displayln (syntax->datum #'stx))
-                                              #'(append (terms ts)
-                                                        (negate-coefficents (append (terms tss) ...)))]
+    [(_terms (- t:term))                      #'(cvs-negate (terms t))]
+    [(_terms (- ts:terms tss:terms ...))      #'(append (terms ts)
+                                                        (cvs-negate (append (terms tss) ...)))]
     [(_terms (* k:number ...
                 (- t1:term t2:term)
                 l:number ...))                (define ks*ls (apply * (syntax->datum #'(k ... l ...))))
@@ -433,23 +439,22 @@
     [(_terms (~and m (med a b c)))            (syntax/loc #'m
                                                 ; b+a(c-b) = b+ac-ab
                                                 (terms (+ b (* a c) (* -1 a b))))]
-    [(_terms t:term)                          #'(let ([cv (term t)])
-                                                  (if (null? cv) '() (list cv)))]))
+    [(_terms t:term)                          #'(term t)]))
 
 (define-syntax (sum stx)
   (syntax-parse stx
     #:literals (+ -)
     [(_sum (+ tss:terms ...))           #'(append (terms tss) ...)]
-    [(_sum (- ts0:terms))               #'(negate-coefficents (terms ts0))]
+    [(_sum (- ts0:terms))               #'(cvs-negate (terms ts0))]
     [(_sum (- ts0:terms tss:terms ...)) #'(append (terms ts0)
-                                                  (negate-coefficents (append (terms tss) ...)))]
+                                                  (cvs-negate (append (terms tss) ...)))]
     [(_sum ts:terms)                    #'(terms ts)]))
 
 (define-syntax (==1 stx)
   (syntax-parse stx
     [(_ s1:sum s2:sum)                  #'(canonical
                                            (append (sum s1)
-                                                   (negate-coefficents (sum s2))))]))
+                                                   (cvs-negate (sum s2))))]))
 
 (define-syntax (== stx)
   (syntax-parse stx
@@ -705,12 +710,12 @@
                      0)]))
 
 (define (cvs-make-constant k)
-  (if (= k 0) '() (cons k 1)))
+  (if (= k 0) '() (list (cons k 1))))
 
 (define (cvs-make-constant-or-variable v)
   (if (number? v)
       (cvs-make-constant v)
-      (cons 1 v)))
+      (list (cons 1 v))))
 
 (define (cvs-zero? cvs)
   (null? cvs))
@@ -810,7 +815,6 @@
     ; v was found with coef c
     [c (when (= c 0)
          (error 'cvs-isolate "internal-error, invariant that c<>0 violated"))
-       (displayln (list 'cvs-isolate 'c c))
        (define -c (- c))
        (map (λ (cv) (cons (/ (car cv) -c) (cdr cv)))
             cvs-cv)]
