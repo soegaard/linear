@@ -2,17 +2,9 @@
 ;; TODO:
 ;;  - fix formatting
 
-; > (declare-vector z)
-; > (declare a b)
-; > (== z (vector a 20))
-; > (== z (vector 30 b))
-; > z
-; '#(30 20)
-; > a
-; 30
-; > b
-; #0=(variable 5 'b (dependent-state (dependency #0# (list (cons 1 (variable 3 "z.1" (known-state 20))))) #f))
-
+; > (declare [2 v])
+; (v0 v1)
+; > (== v (* 2 (- #(1 2) #(3 4))))
 
 (require "variables.rkt"
          syntax/stx
@@ -39,12 +31,16 @@
 ;            |   (- product)
 ;            |   (+ product)
 ; numeric   :=   number
+;            |   vector                          ; turns into an variable
 ;            |   variable
 ;            |   expression                      ; that evaluates to a number or variable
 
 ;;; Representation
 ;;   - numeric   is a number or as a variable
-;;   - product   is represented as a (cons number variable) or (cons number 1)
+;;   - product   is represented as a
+;;                     (list (cons number 1))        ; product of only numbers
+;;                  or (list (cons number variable)) ; product of number times variable
+;;                  or (list (cons number variable) (cons number vector-variable) ...)
 ;;   - term      is represented as a product
 ;;   - terms     is represented as a list of product
 ;;   - sum       is represented as a list of product
@@ -207,38 +203,35 @@
            (do-define-ids)])])]))
 
 
-;; (declare-vector   z1 z2 ...) declares vectors of dimension 2
-;; (declare-vector n z1 z2 ...) declares vectors of dimension n
-
-(define-syntax (declare-vector stx)
-  (syntax-parse stx
-    [(_declare-vector id:id ...)
-     #'(declare-vector 2 id ...)]     
-    [(_declare-vector n:integer id:id ...)
-     (define ids (syntax->list #'(id ...)))
-     (with-syntax ([($id ...) (for/list ([id ids]) (format-id stx "$~a" id))])
-       #'(begin
-           (define $id (new-tuple n 'id)) ...
-           (define-syntax id (λ (stx)
-                               #'(let ()
-                                   (define v $id)
-                                   (if (known? v)
-                                       (value v)
-                                       v)))) ...))]))
+(define-syntax (whatever stx)
+  #'(variable (serial) 'whatever (undefined-state)))
 
 (begin-for-syntax
 
+  #;(define-syntax-class whatever
+    #:description "whatever"
+    #:opaque  
+    (pattern id:identifier #:when (eq? (syntax-e #'id) 'whatever)))
+  
   (define-syntax-class variable
     #:description "variable"
     #:opaque  ; note: error in terms of "variable" and not identifier
-    (pattern var:identifier #:when (declared? #'var)))
+    (pattern var:identifier #:when (declared? #'var))
+    #;(pattern w:whatever))
 
+  (define-syntax-class vector
+    #:description "vector"
+    #:opaque  
+    (pattern v #:when (vector? (syntax-e #'v))))
+  
   (define-syntax-class numeric
     #:description "numeric (number or variable)"
     #:opaque
     #:literals (unquote)
-    (pattern v:variable)
     (pattern n:number)
+    (pattern u:vector)
+    (pattern v:variable)    
+    #;(pattern w:whatever)
     (pattern e:expr))
 
   (define-syntax-class product
@@ -299,13 +292,18 @@
     (error 'make-vector-variable "expected a vector, got: ~a" v))
   (variable (serial) v (undefined-state)))
 
+
 (define-syntax (numeric stx)
+(define (d n) (displayln n))
   (syntax-parse stx
     [(_numeric n:numeric)
      (syntax-parse #'n
-       [x:number         #'x]
-       [v:variable       #'v]
+       [x:number         (d 1) #'x]
+       ; [w:whatever       (d 4) #'(variable (serial) 'whatever (undefined-state))]
+       [v:variable       (d 2) #'v]
+       [u:vector         (d 3) #'(make-vector-variable u)]
        [e:expr
+        (d 5) 
         (syntax/loc #'e
           (with-top (let ([v e])
                       (when (vector? v)
@@ -313,7 +311,7 @@
                       (unless (or (number? v) (variable? v))
                         (raise-syntax-error 'numeric
                                             "expected a number or a variable"
-                                            #'e))
+                                            e))
                       v)))])]))
 
 (define-syntax (number-expression stx)
@@ -334,7 +332,14 @@
 (define-syntax (product stx)
   (syntax-parse stx
     #:literals (* - +)
+    [(_product (- p:product))                 #'(let ()
+                                                  (define cv (product p))
+                                                  (cons (* -1 (car cv)) (cdr cv)))]
+    [(_product (+ p:product))                 #'(product p)]
+    ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
+    
     [(_product (* f ...))
+     (displayln '(* f ...))
      ; A factor f can be either a number, a (declared) variable,
      ; a nested product of the form (* f ...) or an expression.
      (define (number-datum? f) (number? (syntax-e f)))
@@ -380,26 +385,24 @@
         (with-syntax ([n ns-prod])
           #'(cons n 1))]
        [(= (length vs) 0)
-        (with-syntax ([n ns-prod] [(e ...) es])
+        (with-syntax ([n ns-prod] [(e ...) es]
+                      [(_product p)  stx])            
           (syntax/loc stx
             (let ([xs (list (numeric e) ...)])
               (define ns (filter number?   xs))
               (define vs (filter variable? xs))
+              (define us (filter (λ (v) (vector? (name v))) vs))
               (define m (apply * ns))
-              (when (> (length vs) 1)
+              (when (> (- (length vs) (length us)) 1)
                 (raise-syntax-error 'product
                                     "more than one expression evaluated to a variable"
-                                    #'_product))
-              (if (null? vs)
-                  (cons (* n m) 1)
-                  (cons (* n m) (car vs))))))])]
-    
-    [(_product (- p:product))                 #'(let ()
-                                                  (define cv (product p))
-                                                  (cons (* -1 (car cv)) (cdr cv)))]
-    [(_product (+ p:product))                 #'(product p)]
-    ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
+                                    #'p))
+              (cond
+                [(null? vs) (cons (* n m) 1)]
+                [(null? us) (cons (* n m) (car vs))]
+                [else       ('todo)]))))])]
     [(_product n:numeric)
+     (displayln '(numeric-product))
      (syntax-parse #'n
        [n:number   #'(cvs-make-constant n)]
        [v:variable #'(cvs-make-constant-or-variable v)]
@@ -409,19 +412,27 @@
   (syntax-parse stx
     [(_term p:product)  #'(product p)]))
 
+
 (define (negate-coefficents cvs)
   (map (λ (cv) (cons (- (car cv)) (cdr cv))) cvs))
          
 (define-syntax (terms stx)
   (syntax-parse stx    
-    #:literals (+ - med)
+    #:literals (+ - * med)
     [(_terms (+ tss:terms ...))               #'(append (terms tss) ...)]
     [(_terms (- t:term))                      #'(negate-coefficents (terms t))]
-    [(_terms (- ts:terms tss:terms ...))      #'(append (terms ts)
+    [(_terms (- ts:terms tss:terms ...))      (displayln (syntax->datum #'stx))
+                                              #'(append (terms ts)
                                                         (negate-coefficents (append (terms tss) ...)))]
-    [(_terms (med a b c))                     (syntax/loc stx
+    [(_terms (* k:number ...
+                (- t1:term t2:term)
+                l:number ...))                (define ks*ls (apply * (syntax->datum #'(k ... l ...))))
+                                              (with-syntax ([ ks*ls    ks*ls]
+                                                            [-ks*ls (- ks*ls)])
+                                                #'(terms (+ (* ks*ls t1) (* -ks*ls t2))))]
+    [(_terms (~and m (med a b c)))            (syntax/loc #'m
                                                 ; b+a(c-b) = b+ac-ab
-                                                (terms (+ b (* a c) (* -1 a b))))]    
+                                                (terms (+ b (* a c) (* -1 a b))))]
     [(_terms t:term)                          #'(let ([cv (term t)])
                                                   (if (null? cv) '() (list cv)))]))
 
@@ -799,6 +810,7 @@
     ; v was found with coef c
     [c (when (= c 0)
          (error 'cvs-isolate "internal-error, invariant that c<>0 violated"))
+       (displayln (list 'cvs-isolate 'c c))
        (define -c (- c))
        (map (λ (cv) (cons (/ (car cv) -c) (cdr cv)))
             cvs-cv)]
