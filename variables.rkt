@@ -29,7 +29,7 @@
 (struct variable (serial name state)
   #:transparent
   #:mutable
-  ; #:methods gen:custom-write [(define write-proc custom-write-variable)]
+  #:methods gen:custom-write [(define write-proc custom-write-variable)]
   )
 
 (struct state                    ()                            #:transparent #:mutable)
@@ -98,52 +98,62 @@
     [(undefined?   v) (~a (name v) " (undefined)")]
     [(known?       v) (~a (name v) " = " (value v))]
     [(independent? v) (format-dependencies (dependencies v))]
-    [else (error)]))
+    [(tuple-var?   v) (~a "<vector-variable>")]
+    [(variable?    v) (cond
+                        [(vector? (name v)) "some vector variable"]
+                        [(tuple-var? v)     "some tuple variable"]
+                        [else               "some variable"])]
+    [else (displayln v) (error)]))
 
 (define (format-dependency d)
   (match-define (dependency v eq) d)
-  (~a (name v) " = " (format-eq-as-expression eq)))
+  (~a (name v) " = " (format-cvs eq)))
   
 (define (format-dependencies ds)
   (string-append* (add-between (map format-dependency ds) "\n  ")))
 
 (define (format-eq eq)
-  (~a (format-eq-as-expression eq) " = 0"))
+  (~a (format-cvs eq) " = 0"))
 
-(define (format-eq-as-expression eq)
+(define (format-cvs cvs)
+  (define (format-constant k)
+    (cond
+      [(zero? k)     ""]
+      [(negative? k) (~a     k)]
+      [else          (~a "+" k)]))
   (define (format-term c v)
     (cond
       [(= c  1)      (~a "+"   (name v))]
       [(= c -1)      (~a "-"   (name v))]
       [(negative? c) (~a     c (name v))]
       [else          (~a "+" c (name v))]))
-  (define (format-constant k)
+  (define (format-cv cv)
+    (define c (car cv))
+    (define v (cdr cv))
     (cond
-      [(zero? k)     ""]
-      [(negative? k) (~a     k)]
-      [else          (~a "+" k)]))
-  (match-define (combination cs vs k) eq)
-  (string-trim (string-append (string-append* (map format-term cs vs))
-                              (format-constant k))
-               "+"))
+      [(eqv? v 1) (format-constant c)]
+      [else       (format-term c v)]))
+  (cond
+    [(null? cvs) 0]
+    [else        (string-trim (string-append* (map format-cv cvs)) "+" )]))
 
 (define (~ x)
   (cond
     [(variable? x)        (format-variable x)]
-    [(combination? x)     (format-eq-as-expression x)]
     [(dependency? x)      (format-dependency x)]
+    [(list? x)            (format-cvs x)]    
     [else                 (~a x)]))
 
 
 ;;; LINEAR COMBINATIONS (EQUATIONS)
 
-(struct combination (coefs vars constant) #:transparent #:mutable)
+;(struct combination (coefs vars constant) #:transparent #:mutable)
 ; represents either the equation:
 ;   c_0 v_0 + ... + c_n v_n + constant = 0
 ; or the linear combination
 ;   c_0 v_0 + ... + c_n v_n + constant 
 ; depending on context.
 
-(define (coefficents c) (combination-coefs     c))
-(define (variables   c) (combination-vars      c))
-(define (constant    c) (combination-constant  c))
+;(define (coefficents c) (combination-coefs     c))
+;(define (variables   c) (combination-vars      c))
+;(define (constant    c) (combination-constant  c))

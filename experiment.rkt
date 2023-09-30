@@ -1,7 +1,4 @@
 #lang racket
-;; TODO:
-;;  - fix formatting
-
 (require "variables.rkt"
          syntax/stx
          racket/stxparam)
@@ -11,7 +8,7 @@
                      syntax/stx
                      "syntax-utils.rkt"))
 
-; One dimensional linear equation
+; One (and more) dimensional linear equations
 
 ; equation  :=   (== sum sum ...)
 ; sum       :=   terms
@@ -165,8 +162,9 @@
      
      ; - the expansion of `declare` depends on where it is used.
      (define ctx (syntax-local-context))
+     (displayln ctx)
      (case ctx 
-       [(module)
+       [(module top-level)
         (add-module-level-variables! ids)
         (do-define-ids)]
        [(expression)
@@ -288,13 +286,21 @@
     (error 'make-vector-variable "expected a vector, got: ~a" v))
   (variable (serial) v (undefined-state)))
 
+(define (make-constant-vector-times-variable v var)
+  (unless (vector? v)
+    (error 'make-constant-vector-times-variable "expected a vector, got: ~a" v))
+  (variable (serial) (cons v var) (undefined-state)))
+
 (define (cvs-make-vector-variable v)
   (list (cons 1 (make-vector-variable v))))
 
+(define (cvs-make-constant-vector-times-variable c v var)
+  (list (cons c (make-constant-vector-times-variable v var))))
+
 
 (define-syntax (numeric stx)
-  ;(define (d n) (displayln n))
-  (define (d n) (void))
+  (define (d n) (displayln n))
+  ; (define (d n) (void))
   (syntax-parse stx
     [(_numeric n:numeric)
      (syntax-parse #'n
@@ -303,7 +309,8 @@
        [v:variable       (d 2) #'v]
        [u:vector         (d 3) #'(make-vector-variable u)]
        [e:expr
-        (d 5) 
+        (d 5)
+        (displayln (syntax->datum stx))
         (syntax/loc #'e
           (with-top (let ([v e])
                       (when (vector? v)
@@ -313,6 +320,18 @@
                                             "expected a number or a variable"
                                             e))
                       v)))])]))
+
+(define-syntax (number-or-vector-expression stx)
+  (syntax-parse stx
+    [(_ e:expr)
+     (syntax/loc #'e
+       (with-top
+           (let ([v e])
+             (unless (or (number? v) (vector? v))
+               (raise-syntax-error 'number-or-vector-expression
+                                   "expected a number or a vector"
+                                   #'e))
+             v)))]))
 
 (define-syntax (number-expression stx)
   (syntax-parse stx
@@ -339,20 +358,44 @@
     (for/vector ([vi (in-vector v)])
       (* k vi)))
   (konstant* x (foldl vec* (car vs) (cdr vs))))
-    
+
+(define (product-of-numbers-and-vectors xs)
+  (define (prod ns) (for/fold ([p 1]) ([n (in-list ns)]) (* n p)))
+  ; assumes that xs contains at least one vector
+  (define who 'product-of-numbers-and-vectors)
+  (define ns   (filter number? xs))
+  (define vs   (filter vector? xs))
+  (unless (> (length vs) 0)
+    (error who "expected at least one vector"))
+  (define dims (map vector-length vs))
+  (define dim (car dims))
+  (unless (apply = dims)
+    (error who "all vectors must have the same length"))  
+  (define prod-ns (prod ns))  
+  (define prod-vs (for/vector ([i (in-range dim)])
+                    (prod (for/list ([v (in-list vs)])
+                            (vector-ref v i)))))
+  (if (= prod-ns 1)
+      prod-vs
+      (for/vector ([i (in-range dim)])
+        (* prod-ns (vector-ref prod-vs i)))))
+  
 
 (define-syntax (product stx)
+  (define (d n) (displayln (list 'p n)))
+  ;(define (d n) (void))
   (syntax-parse stx
     #:literals (* - +)
-    [(_product (- p:product))                 #'(cvs-negate (product p))]
-    [(_product (+ p:product))                 #'(product p)]
+    [(_product (- p:product))                 (d 1) #'(cvs-negate (product p))]
+    [(_product (+ p:product))                 (d 1) #'(product p)]
     ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
     
     [(_product (* f ...))
+     (d 3) (displayln (syntax->datum stx))
      ; A factor f can be either a number, a (declared) variable,
      ; a nested product of the form (* f ...) or an expression.
      (define (number-datum? f) (number? (syntax-e f)))
-     (define (var? f)          (and (identifier? f) (declared? f)))
+     (define (var? f)          (and (identifier? f) (declared? f)))     
      (define (product? f)      (syntax-parse f #:literals (*) [(* f ...) #t] [_ #f]))
      (define (other? f)        (not (or (number-datum? f) (var? f) (product? f))))
      
@@ -371,13 +414,13 @@
 
      (cond
        ; If there are nested products, flatten them.
-       [(> (length ps) 0)
+       [(> (length ps) 0) (d 31)
         (with-syntax ([n ns-prod] [(v ...) vs] [((_ f ...) ...) ps] [(e ...) es])
           (syntax/loc stx
             (product (* n v ... f ... ... e ...))))]
 
        ; One variable v0 present => no variables allowed in the expressions
-       [(and (= (length vs) 1) (= (length es) 0))
+       [(and (= (length vs) 1) (= (length es) 0)) (d 32)
         (with-syntax ([n ns-prod] [(v0 . more) vs])
           #'(let ([v v0])
               ; If v0 is known, it will evaluate to a number.
@@ -385,15 +428,23 @@
               (cond
                 [(number? v) (cvs-make-constant (* v n))]
                 [else        (list (cons n v0))])))]
-       [(and (= (length vs) 1))
+       [(and (= (length vs) 1)) (d 33)
+                                (displayln (map syntax->datum es))
         (with-syntax ([n ns-prod] [(v0 . more) vs] [(e ...) es])
-          #'(let ([ns (list (number-expression e) ...)])
-              (list (cons (* n (apply * ns)) v0))))]
+          #'(let ([ns (list (number-or-vector-expression e) ...)])
+              (define c (product-of-numbers-and-vectors (cons n ns)))
+              (cvs-make-constant-vector-times-variable 1 c v0)))]
        ; No variable present => one variable allowed in the expressions
-       [(and (= (length vs) 0) (= (length es) 0))
+       [(and (= (length vs) 0) (= (length es) 0)) (d 34)
         (with-syntax ([n ns-prod])
           #'(list (cons n 1)))]
-       [(= (length vs) 0)
+       [(= (length vs) 0) (d 35)
+                          (displayln (list 35 (syntax->datum stx)))
+                          (displayln (list 'ns ns))
+                          (displayln (list 'vs vs))
+                          (displayln (list 'ps ps))
+                          (displayln (list 'es (map syntax->datum es)))                          
+                          
         (with-syntax ([n ns-prod] [(e ...) es]
                       [(_product p)  stx])            
           (syntax/loc stx
@@ -412,7 +463,7 @@
                 [else       (if (= (* m n) 0)
                                 '()
                                 (cvs-make-vector-variable (vector* (* n m) (map name us))))]))))])]
-    [(_product n:numeric)
+    [(_product n:numeric) (d 4)
      (syntax-parse #'n
        [n:number   #'(cvs-make-constant n)]
        [v:variable #'(cvs-make-constant-or-variable v)]
@@ -453,8 +504,12 @@
 (define-syntax (==1 stx)
   (syntax-parse stx
     [(_ s1:sum s2:sum)                  #'(canonical
-                                           (append (sum s1)
-                                                   (cvs-negate (sum s2))))]))
+                                           (let ()
+                                             (define r1  (sum s1))
+                                             (define r2  (sum s2))
+                                             (displayln (list 'r1 r1))
+                                             (displayln (list 'r2 r2))
+                                             (append r1 (cvs-negate r2))))]))
 
 (define-syntax (== stx)
   (syntax-parse stx
@@ -477,13 +532,27 @@
                      (define c  (car cv))
                      (define v  (cdr cv))
                      (cond
+                       ; From literal numbers (cons c 1).
                        [(equal? v 1)       (cons cv (loop (cdr cvs)))]
+                       ; From literal constants
                        [(vector? (name v)) (define vi (vector-ref (name v) i))
                                            (cond
                                              [(number? vi) (cons (cons (* c vi) 1)
                                                                  (loop (cdr cvs)))]
                                              [else         (cons (cons c vi)
                                                                  (loop (cdr cvs)))])]
+                       ; From (* variable literal-vector).
+                       ; The name is (cons vector variable).
+                       [(pair? (name v))   (define u  (car (name v)))
+                                           (define v0 (cdr (name v)))
+                                           (define vi (vector-ref u i))
+                                           (cond
+                                             [(number? vi) (cons (cons (* c vi) v0)
+                                                                 (loop (cdr cvs)))]
+                                             [(known?  vi) (cons (cons (* c (value vi)) 1)
+                                                                 (loop (cdr cvs)))]
+                                             [else         (error 'internal)])]
+                       ; From n dimensional variables
                        [(tuple-var? v)     (define vi (tuple-ref v i))
                                            (cond
                                              [(number? vi) (cons (cons (* c vi) 1)
@@ -526,6 +595,8 @@
 
 (define (rewrite-vector-variables cvs stxloc)
   ; A literal vector arrives here as an undefined variable whose name is a vector.
+  ; A product between a variable and a constant vector arrives here
+  ; as an undefined varible, whose name is (cons var vec).
   ; A tuple variable contains a vector of variables.
   (define (vector-variable? v)
     (and (variable? v)
@@ -546,7 +617,7 @@
     [(null? vvars) (list (list cvs stxloc))]
     ; Otherwise, we must make an equation from each vector index.
     [else          (define dims (map vector-length vecs))
-                   (define dim (car dims))
+                   (define dim  (car dims))
                    (unless (apply = dims)
                      (raise-syntax-error
                       '== "all vectors must have the same length" stxloc))                   
@@ -887,20 +958,9 @@
                               cvs*
                               (cons (cons k 1) cvs*))]))
 
-;(define (reduce-known! eq)
-;  (define-values (cs vs k) (reduce-known eq))
-;  (set-combination-coefs!    eq cs)
-;  (set-combination-vars!     eq vs)
-;  (set-combination-constant! eq k))
+;(declare [2 v] a)
+(declare a)
+(== #(5 5) (med a #(0 0) #(10 10)))
+a
 
-#;(define (eliminate-dependent! eq dv)
-    (define req (eliminate-dependent eq dv))
-    (set-combination-coefs!    eq (combination-coefs    req))
-    (set-combination-vars!     eq (combination-vars     req))
-    (set-combination-constant! eq (combination-constant req)))
 
-#;(define (remove-all-dependent-variables! eq)
-    (define dv (find-dependent-variable eq))
-    (when dv
-      (eliminate-dependent! eq dv)
-      (remove-all-dependent-variables! eq)))
