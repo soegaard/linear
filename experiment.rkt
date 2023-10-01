@@ -40,7 +40,7 @@
 ;;   - equation  is represented as a list of list of product
 
 ;; Mediation. Notation in MetaFont/MetaPost t[x1,x2].
-(define (med t x1 x2)
+(define (med t x1 x2)  
   (+ x1 (* t (- x2 x1))))
 
 
@@ -202,7 +202,7 @@
 
 (begin-for-syntax
 
-  #;(define-syntax-class whatever
+  (define-syntax-class whatever
     #:description "whatever"
     #:opaque  
     (pattern id:identifier #:when (eq? (syntax-e #'id) 'whatever)))
@@ -305,7 +305,7 @@
     [(_numeric n:numeric)
      (syntax-parse #'n
        [x:number         (d 1) #'x]
-       ; [w:whatever       (d 4) #'(variable (serial) 'whatever (undefined-state))]
+       [w:whatever       (d 4) #'(variable (serial) 'whatever (undefined-state))]
        [v:variable       (d 2) #'v]
        [u:vector         (d 3) #'(make-vector-variable u)]
        [e:expr
@@ -345,8 +345,39 @@
                                    #'e))
              v)))]))
 
+(define-syntax (maybe-known-difference stx)
+  (define sub -)
+  (syntax-parse stx
+    #:literals (-)
+    [(_ (- m:number n:number))  (define m0   (syntax-e #'m))
+                                (define n0   (syntax-e #'n))
+                                (with-syntax ([m-n (- m0 n0)]) #'m-n)]
+    [(_ (- m:number v:vector))  (define m0   (syntax-e #'m))
+                                (define ns   (syntax->datum #'v))
+                                (define m-v  (for/vector ([n (in-vector ns)]) (- m0 n)))
+                                (with-syntax ([m-v m-v]) #'m-v)]
+    [(_ (- v:vector n:number )) (define ms   (syntax->datum #'v))
+                                (define n0   (syntax-e #'n))
+                                (define v-n  (for/vector ([m (in-vector ms)]) (- m n0)))
+                                (with-syntax ([v-n v-n]) #'v-n)]
+    [(_ (- v:vector w:vector )) (define ms   (syntax->datum #'v))
+                                (define ns   (syntax->datum #'w))
+                                (define v-w  (for/vector ([m (in-vector ms)] [n (in-vector ns)]) (- m n)))
+                                (with-syntax ([v-w v-w]) #'v-w)]
+    [_                          #'#f]))
+
+(define-syntax (known-difference stx)
+  (syntax-parse stx
+    [(_ sub)
+     (with-syntax ([loc (datum->syntax #f 'error-location stx)])
+       #'(or (maybe-known-difference sub)
+             (raise-syntax-error 'known-difference
+                                 "expected a known difference"
+                                 #'loc)))]))
+
 
 (define (cvs-negate cvs)
+  (displayln (list 'cvs-negate cvs))
   (map (λ (cv) (cons (- (car cv)) (cdr cv))) cvs))                 
 
 (define (vector* x vs)
@@ -381,7 +412,7 @@
         (* prod-ns (vector-ref prod-vs i)))))
   
 
-(define-syntax (product stx)
+(define-syntax (product stx) ; -> cvs
   (define (d n) (displayln (list 'p n)))
   ;(define (d n) (void))
   (syntax-parse stx
@@ -389,13 +420,20 @@
     [(_product (- p:product))                 (d 1) #'(cvs-negate (product p))]
     [(_product (+ p:product))                 (d 1) #'(product p)]
     ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
+    [(_product (* whatever e:expr))                 #'(let ([v e])
+                                                        (cond
+                                                          [(number? v) (list (cons v whatever))]
+                                                          [(vector? v) (cvs-make-constant-vector-times-variable 1 v whatever)]
+                                                          [else        (error 'product-whatever)]))]
+                                                          
+                                                        
     
     [(_product (* f ...))
      (d 3) (displayln (syntax->datum stx))
      ; A factor f can be either a number, a (declared) variable,
      ; a nested product of the form (* f ...) or an expression.
      (define (number-datum? f) (number? (syntax-e f)))
-     (define (var? f)          (and (identifier? f) (declared? f)))     
+     (define (var? f)          (and (identifier? f) (or (declared? f) (eq? (syntax-e f) 'whatever))))
      (define (product? f)      (syntax-parse f #:literals (*) [(* f ...) #t] [_ #f]))
      (define (other? f)        (not (or (number-datum? f) (var? f) (product? f))))
      
@@ -487,6 +525,13 @@
                                               (with-syntax ([ ks*ls    ks*ls]
                                                             [-ks*ls (- ks*ls)])
                                                 #'(terms (+ (* ks*ls t1) (* -ks*ls t2))))]
+    [(_terms (~and m (med w:whatever b c)))   (displayln 'x-marks-the-spot)
+                                              (syntax/loc #'m
+                                                ; b+a(c-b) = b+ac-ab
+                                                (let ([d (maybe-known-difference (- c b))])
+                                                  (if d
+                                                      (terms (+ b (* w d)))
+                                                      (raise-syntax-error 'med "expected known difference"))))]
     [(_terms (~and m (med a b c)))            (syntax/loc #'m
                                                 ; b+a(c-b) = b+ac-ab
                                                 (terms (+ b (* a c) (* -1 a b))))]
@@ -960,7 +1005,7 @@
 
 ;(declare [2 v] a)
 (declare a)
-(== #(5 5) (med a #(0 0) #(10 10)))
-a
+;(== #(5 5) (med a #(0 0) #(10 10)))
+;a
 
 

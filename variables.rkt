@@ -29,7 +29,7 @@
 (struct variable (serial name state)
   #:transparent
   #:mutable
-  #:methods gen:custom-write [(define write-proc custom-write-variable)]
+  ; #:methods gen:custom-write [(define write-proc custom-write-variable)]
   )
 
 (struct state                    ()                            #:transparent #:mutable)
@@ -92,11 +92,16 @@
 
 ;;; FORMATTING
 
+(define (~name v)
+  (case (name v)
+    [(whatever) (~a (name v) (serial v))]
+    [else       (name v)]))
+
 (define (format-variable v)
   (cond
     [(dependent?   v) (format-dependency (the-dependency v))]
-    [(undefined?   v) (~a (name v) " (undefined)")]
-    [(known?       v) (~a (name v) " = " (value v))]
+    [(undefined?   v) (~a (~name v)            " (undefined)")]
+    [(known?       v) (~a (~name v) " = " (value v))]
     [(independent? v) (format-dependencies (dependencies v))]
     [(tuple-var?   v) (~a "<vector-variable>")]
     [(variable?    v) (cond
@@ -105,9 +110,10 @@
                         [else               "some variable"])]
     [else (displayln v) (error)]))
 
+
 (define (format-dependency d)
   (match-define (dependency v eq) d)
-  (~a (name v) " = " (format-cvs eq)))
+  (~a (~name v) " = " (format-cvs eq)))
   
 (define (format-dependencies ds)
   (string-append* (add-between (map format-dependency ds) "\n  ")))
@@ -123,10 +129,10 @@
       [else          (~a "+" k)]))
   (define (format-term c v)
     (cond
-      [(= c  1)      (~a "+"   (name v))]
-      [(= c -1)      (~a "-"   (name v))]
-      [(negative? c) (~a     c (name v))]
-      [else          (~a "+" c (name v))]))
+      [(= c  1)      (~a "+"   (~name v))]
+      [(= c -1)      (~a "-"   (~name v))]
+      [(negative? c) (~a     c (~name v))]
+      [else          (~a "+" c (~name v))]))
   (define (format-cv cv)
     (define c (car cv))
     (define v (cdr cv))
