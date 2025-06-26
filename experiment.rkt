@@ -128,7 +128,7 @@
                   (define sym   (string->symbol name))
                   (define names (for/list ([i m])
                                   (string->symbol (string-append name (number->string i)))))
-                  (displayln names)
+                  #;(displayln names)
                   (define ids   (for/list ([name names]) (datum->syntax id name id)))
                   (define defs  (for/list ([id   ids])   (do-define-numeric-id id)))
                   (define $ids  (map get-$id-from-def defs))
@@ -162,7 +162,7 @@
      
      ; - the expansion of `declare` depends on where it is used.
      (define ctx (syntax-local-context))
-     (displayln ctx)
+     ; (displayln ctx)
      (case ctx 
        [(module top-level)
         (add-module-level-variables! ids)
@@ -299,8 +299,8 @@
 
 
 (define-syntax (numeric stx)
-  (define (d n) (displayln n))
-  ; (define (d n) (void))
+  ; (define (d n) (displayln n))
+  (define (d n) (void))
   (syntax-parse stx
     [(_numeric n:numeric)
      (syntax-parse #'n
@@ -310,7 +310,7 @@
        [u:vector         (d 3) #'(make-vector-variable u)]
        [e:expr
         (d 5)
-        (displayln (syntax->datum stx))
+        ; (displayln (syntax->datum stx))
         (syntax/loc #'e
           (with-top (let ([v e])
                       (when (vector? v)
@@ -377,7 +377,7 @@
 
 
 (define (cvs-negate cvs)
-  (displayln (list 'cvs-negate cvs))
+  ; (displayln (list 'cvs-negate cvs))
   (map (λ (cv) (cons (- (car cv)) (cdr cv))) cvs))                 
 
 (define (vector* x vs)
@@ -413,10 +413,10 @@
   
 
 (define-syntax (product stx) ; -> cvs
-  (define (d n) (displayln (list 'p n)))
-  ;(define (d n) (void))
+  ; (define (d n) (displayln (list 'p n)))
+  (define (d n) (void))
   (syntax-parse stx
-    #:literals (* - +)
+    #:literals (* - + whatever)
     [(_product (- p:product))                 (d 1) #'(cvs-negate (product p))]
     [(_product (+ p:product))                 (d 1) #'(product p)]
     ; This needs to be last, s.t. (* 2 a) is not seen as an expression by `numeric`.
@@ -429,7 +429,7 @@
                                                         
     
     [(_product (* f ...))
-     (d 3) (displayln (syntax->datum stx))
+     (d 3) ; (displayln (syntax->datum stx))
      ; A factor f can be either a number, a (declared) variable,
      ; a nested product of the form (* f ...) or an expression.
      (define (number-datum? f) (number? (syntax-e f)))
@@ -467,7 +467,7 @@
                 [(number? v) (cvs-make-constant (* v n))]
                 [else        (list (cons n v0))])))]
        [(and (= (length vs) 1)) (d 33)
-                                (displayln (map syntax->datum es))
+                                #;(displayln (map syntax->datum es))
         (with-syntax ([n ns-prod] [(v0 . more) vs] [(e ...) es])
           #'(let ([ns (list (number-or-vector-expression e) ...)])
               (define c (product-of-numbers-and-vectors (cons n ns)))
@@ -477,11 +477,11 @@
         (with-syntax ([n ns-prod])
           #'(list (cons n 1)))]
        [(= (length vs) 0) (d 35)
-                          (displayln (list 35 (syntax->datum stx)))
-                          (displayln (list 'ns ns))
-                          (displayln (list 'vs vs))
-                          (displayln (list 'ps ps))
-                          (displayln (list 'es (map syntax->datum es)))                          
+                          #'(displayln (list 35 (syntax->datum stx)))
+                          #;(displayln (list 'ns ns))
+                          #;(displayln (list 'vs vs))
+                          #;(displayln (list 'ps ps))
+                          #;(displayln (list 'es (map syntax->datum es)))                          
                           
         (with-syntax ([n ns-prod] [(e ...) es]
                       [(_product p)  stx])            
@@ -525,7 +525,7 @@
                                               (with-syntax ([ ks*ls    ks*ls]
                                                             [-ks*ls (- ks*ls)])
                                                 #'(terms (+ (* ks*ls t1) (* -ks*ls t2))))]
-    [(_terms (~and m (med w:whatever b c)))   (displayln 'x-marks-the-spot)
+    [(_terms (~and m (med w:whatever b c)))   #;(displayln 'x-marks-the-spot)
                                               (syntax/loc #'m
                                                 ; b+a(c-b) = b+ac-ab
                                                 (let ([d (maybe-known-difference (- c b))])
@@ -552,8 +552,8 @@
                                            (let ()
                                              (define r1  (sum s1))
                                              (define r2  (sum s2))
-                                             (displayln (list 'r1 r1))
-                                             (displayln (list 'r2 r2))
+                                             #;(displayln (list 'r1 r1))
+                                             #;(displayln (list 'r2 r2))
                                              (append r1 (cvs-negate r2))))]))
 
 (define-syntax (== stx)

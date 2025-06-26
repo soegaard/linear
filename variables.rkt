@@ -29,7 +29,7 @@
 (struct variable (serial name state)
   #:transparent
   #:mutable
-  ; #:methods gen:custom-write [(define write-proc custom-write-variable)]
+  #:methods gen:custom-write [(define write-proc custom-write-variable)]
   )
 
 (struct state                    ()                            #:transparent #:mutable)
