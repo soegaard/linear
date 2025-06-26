@@ -870,7 +870,7 @@
      #'(let ()
          (define v1 e1)
          (define v2 e2)
-         (displayln (list 'zzz 'v1 v1 'v2 v2))
+         ; (displayln (list 'zzz 'v1 v1 'v2 v2))
          (define cv
            (cond
              [(and (number? v1)   (number? v2))    (cons (* k v1 v2) one)]
@@ -892,7 +892,7 @@
      (syntax/loc stx
        (let ()
          (define v e)
-         (displayln (list 'yyy v))
+         ; (displayln (list 'yyy v))
          (cond
            [(number?  v) (cons (- v) one)]
            [(vector?  v) (make-tuple (vector-map - v))]
@@ -907,7 +907,7 @@
      (syntax/loc #'loc
        (let ()
          (define v e)
-         (displayln (list 'xxx v))
+         ; (displayln (list 'xxx v))
          (cond
            [(number? v)   (cons v one)]
            [(numeric? v)  (cons 1 v)]
@@ -1128,11 +1128,11 @@
 
 
 
-; (declare a b c d e)
+;(declare a b c d e)
 
 ;(define eq1 (linear-equation '(1   2  3 4)  (list a b c d) 6))
 ;(define eq2 (linear-equation '(10 20 -3 50) (list a b c e) 60))
-;(add eq1 eq2)
+; (add eq1 eq2)
 ;(subtract eq1 eq2)
 ;(map-coeffs (λ (x) (* 2 x)) eq1)
 
